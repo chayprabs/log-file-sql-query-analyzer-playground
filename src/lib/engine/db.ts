@@ -1,211 +1,445 @@
-import initSqlJs, { Database as SqlJsDatabase } from 'sql.js';
-import { LogFormat, ColumnDef, inferJsonSchema } from './formats';
-import { detectFormat } from './detector';
+import initSqlJs, { Database as SqlJsDatabase, SqlJsStatic } from "sql.js";
+import { detectFormat } from "./detector";
+import {
+  CellValue,
+  ColumnDef,
+  getSchemaForFormat,
+  inferJsonSchema,
+  isJournaldRecordLine,
+  LogFormat,
+  parseGeneric,
+  ParsedLogRecord,
+} from "./formats";
 
 export interface QueryResult {
   columns: string[];
-  values: (string | number | null)[][];
-  rowCount: number;
-  executionTimeMs: number;
+  rows: (string | number | null)[][];
+  error?: string;
+}
+
+export interface LoadProgress {
+  current: number;
+  total: number;
+}
+
+export interface LoadLogFileOptions {
+  confirmLargeFile?: (warning: string) => boolean | Promise<boolean>;
+  largeFileWarningBytes?: number;
+  onProgress?: (progress: LoadProgress) => void;
 }
 
 export interface LogDatabase {
   db: SqlJsDatabase;
   format: LogFormat;
+  schema: ColumnDef[];
   rowCount: number;
+  skippedCount: number;
+  tableName: typeof LOGS_TABLE_NAME;
   query: (sql: string) => QueryResult;
   close: () => void;
 }
 
-let dbInstance: SqlJsDatabase | null = null;
-let initPromise: Promise<void> | null = null;
+interface RawRecord {
+  text: string;
+  lineNo: number;
+}
 
-async function initSql(): Promise<void> {
-  if (initPromise) return initPromise;
-  
-  initPromise = (async () => {
-    const SQL = await initSqlJs({
-      locateFile: (file: string) => `https://sql.js.org/dist/${file}`,
+const DEFAULT_LARGE_FILE_WARNING_BYTES = 50 * 1024 * 1024;
+const BATCH_SIZE = 5000;
+
+export const LOGS_TABLE_NAME = "logs";
+
+export const BASE_SCHEMA: ColumnDef[] = [
+  { name: "line_no", type: "INTEGER" },
+  { name: "raw_line", type: "TEXT" },
+];
+
+let sqlModulePromise: Promise<SqlJsStatic> | null = null;
+let currentDatabase: SqlJsDatabase | null = null;
+
+function escapeIdentifier(identifier: string): string {
+  return `"${identifier.replace(/"/g, '""')}"`;
+}
+
+function getWasmPath(file: string): string {
+  if (typeof window === "undefined") {
+    return file;
+  }
+
+  return new URL(`/${file}`, window.location.origin).toString();
+}
+
+async function getSqlModule(): Promise<SqlJsStatic> {
+  if (!sqlModulePromise) {
+    sqlModulePromise = initSqlJs({
+      locateFile: (file) => getWasmPath(file),
     });
-    dbInstance = new SQL.Database();
-  })();
-  
-  return initPromise;
+  }
+
+  return sqlModulePromise;
 }
 
-function getSqlType(column: ColumnDef): string {
-  return column.type === 'INTEGER' || column.type === 'REAL' 
-    ? 'INTEGER' 
-    : 'TEXT';
+function normalizeContent(content: string): string {
+  return content.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 }
 
-function parseFileLines(content: string): string[] {
-  // Normalize line endings: CRLF -> LF, then split
-  const normalized = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-  // Strip BOM if present
-  const cleaned = normalized.replace(/^\uFEFF/, '');
-  return cleaned.split('\n').filter(line => line.trim().length > 0);
+function isProbablyBinary(content: string): boolean {
+  return /[\x00-\x08\x0E-\x1F]/.test(content.slice(0, 1024));
 }
 
-export async function loadLogFile(file: File): Promise<LogDatabase> {
-  await initSql();
-  
-  if (!dbInstance) {
-    throw new Error('Failed to initialize SQL.js');
-  }
-  
-  const content = await file.text();
-  
-  // Detect binary content by checking for control characters in first 1KB
-  const sample = content.slice(0, 1024);
-  if (/[\x00-\x08\x0E-\x1F]/.test(sample)) {
-    throw new Error('File appears to be binary, not a text log file');
-  }
-  
-  const lines = parseFileLines(content);
-  
-  if (lines.length === 0) {
-    throw new Error('File is empty');
-  }
-  
-  const { format: detectedFormat } = detectFormat(lines);
-  
-  let format = detectedFormat;
-  let schema = format.schema;
-  
-  if (format.name === 'json') {
-    const parsed = lines.slice(0, 100).map(line => {
-      const result = format.parse(line);
-      return result;
-    }).filter(Boolean) as Record<string, string | number | null>[];
-    
-    if (parsed.length > 0) {
-      const inferredSchema = inferJsonSchema(parsed);
-      schema = [
-        { name: 'line_no', type: 'INTEGER' as const },
-        { name: 'raw_line', type: 'TEXT' as const },
-        ...inferredSchema,
-      ];
+function splitLineRecords(content: string): RawRecord[] {
+  return content.split("\n").flatMap((line, index, allLines) => {
+    const isTrailingEmptyLine = index === allLines.length - 1 && line === "";
+    if (isTrailingEmptyLine) {
+      return [];
     }
-  }
-  
-  const tableName = format.name.replace(/_access/, 's');
-  dbInstance.run(`DROP TABLE IF EXISTS ${tableName}`);
-  
-  const columns = schema.map(col => `${col.name} ${getSqlType(col)}`);
-  columns.unshift('id INTEGER PRIMARY KEY');
-  columns.unshift('line_no INTEGER');
-  
-  const createSql = `CREATE TABLE ${tableName} (${columns.join(', ')})`;
-  dbInstance.run(createSql);
-  
-  const hasTimestamp = schema.some(c => 
-    c.name.toLowerCase().includes('time') || 
-    c.name.toLowerCase().includes('timestamp')
+
+    return [{ text: line, lineNo: index + 1 }];
+  });
+}
+
+function splitJournaldRecords(content: string): RawRecord[] {
+  const lineRecords = splitLineRecords(content);
+  const hasJsonLines = lineRecords.some((record) =>
+    record.text.trim().startsWith("{")
   );
-  
-  let prevTimestamp: number | null = null;
-  let batchSize = 5000;
-  let batch: (string | number | null)[] = [];
-  
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    let parsed = format.parse(line);
-    
+
+  if (hasJsonLines) {
+    return lineRecords.filter((record) => record.text.trim().length > 0);
+  }
+
+  const lines = content.split("\n");
+  const records: RawRecord[] = [];
+  let currentLines: string[] = [];
+  let startLineNo = 1;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+
+    if (!currentLines.length && !line.trim()) {
+      continue;
+    }
+
+    if (!currentLines.length) {
+      startLineNo = index + 1;
+    }
+
+    if (!line.trim()) {
+      if (currentLines.length) {
+        records.push({ text: currentLines.join("\n"), lineNo: startLineNo });
+        currentLines = [];
+      }
+      continue;
+    }
+
+    if (
+      currentLines.length === 0 ||
+      isJournaldRecordLine(line) ||
+      /^\s/.test(line)
+    ) {
+      currentLines.push(line);
+      continue;
+    }
+
+    records.push({ text: currentLines.join("\n"), lineNo: startLineNo });
+    currentLines = [line];
+    startLineNo = index + 1;
+  }
+
+  if (currentLines.length) {
+    records.push({ text: currentLines.join("\n"), lineNo: startLineNo });
+  }
+
+  return records;
+}
+
+function getRecordsForFormat(format: LogFormat, content: string): RawRecord[] {
+  if (format.name === "journald") {
+    return splitJournaldRecords(content);
+  }
+
+  return splitLineRecords(content);
+}
+
+function dedupeSchema(columns: ColumnDef[]): ColumnDef[] {
+  const seen = new Set<string>();
+  const deduped: ColumnDef[] = [];
+
+  for (const column of columns) {
+    if (seen.has(column.name)) {
+      continue;
+    }
+
+    seen.add(column.name);
+    deduped.push(column);
+  }
+
+  return deduped;
+}
+
+function getFullSchema(
+  format: LogFormat,
+  inferredJsonSchema?: ColumnDef[]
+): ColumnDef[] {
+  return dedupeSchema([...BASE_SCHEMA, ...getSchemaForFormat(format, inferredJsonSchema)]);
+}
+
+function createLogsTable(db: SqlJsDatabase, schema: ColumnDef[]): void {
+  const definitions = schema.map(
+    (column) => `${escapeIdentifier(column.name)} ${column.type}`
+  );
+
+  db.run(`DROP TABLE IF EXISTS ${escapeIdentifier(LOGS_TABLE_NAME)}`);
+  db.run(`CREATE TABLE ${escapeIdentifier(LOGS_TABLE_NAME)} (${definitions.join(", ")})`);
+}
+
+function coerceValue(value: CellValue | undefined): string | number | null {
+  return value ?? null;
+}
+
+function recordToRow(schema: ColumnDef[], record: ParsedLogRecord): (string | number | null)[] {
+  return schema.map((column) => coerceValue(record[column.name]));
+}
+
+function flushBatch(
+  db: SqlJsDatabase,
+  schema: ColumnDef[],
+  batch: (string | number | null)[][]
+): void {
+  if (!batch.length) {
+    return;
+  }
+
+  const columns = schema.map((column) => escapeIdentifier(column.name)).join(", ");
+  const rowPlaceholders = `(${schema.map(() => "?").join(", ")})`;
+  const placeholders = batch.map(() => rowPlaceholders).join(", ");
+  const params = batch.flat();
+
+  db.run("BEGIN TRANSACTION");
+  try {
+    db.run(
+      `INSERT INTO ${escapeIdentifier(LOGS_TABLE_NAME)} (${columns}) VALUES ${placeholders}`,
+      params
+    );
+    db.run("COMMIT");
+  } catch (error) {
+    db.run("ROLLBACK");
+    throw error;
+  }
+}
+
+function createIndexes(db: SqlJsDatabase, schema: ColumnDef[]): void {
+  const columnNames = new Set(schema.map((column) => column.name));
+
+  if (columnNames.has("line_no")) {
+    db.run(
+      `CREATE INDEX IF NOT EXISTS ${escapeIdentifier("idx_logs_line_no")} ON ${escapeIdentifier(
+        LOGS_TABLE_NAME
+      )} (${escapeIdentifier("line_no")})`
+    );
+  }
+
+  if (columnNames.has("timestamp")) {
+    db.run(
+      `CREATE INDEX IF NOT EXISTS ${escapeIdentifier("idx_logs_timestamp")} ON ${escapeIdentifier(
+        LOGS_TABLE_NAME
+      )} (${escapeIdentifier("timestamp")})`
+    );
+  }
+
+  if (columnNames.has("status")) {
+    db.run(
+      `CREATE INDEX IF NOT EXISTS ${escapeIdentifier("idx_logs_status")} ON ${escapeIdentifier(
+        LOGS_TABLE_NAME
+      )} (${escapeIdentifier("status")})`
+    );
+  }
+}
+
+function normalizeQueryRows(
+  rows: (string | number | null | Uint8Array)[][]
+): (string | number | null)[][] {
+  return rows.map((row) =>
+    row.map((cell) => {
+      if (cell instanceof Uint8Array) {
+        return null;
+      }
+
+      return cell;
+    })
+  );
+}
+
+function buildLargeFileWarning(fileName: string, size: number): string {
+  const sizeInMb = (size / (1024 * 1024)).toFixed(1);
+  return `${fileName} is ${sizeInMb} MB. Large log files may take noticeable time to parse. Continue?`;
+}
+
+function reportProgress(
+  callback: LoadLogFileOptions["onProgress"],
+  progress: LoadProgress
+): void {
+  if (callback) {
+    callback(progress);
+  }
+}
+
+export async function loadLogFile(
+  file: File,
+  options: LoadLogFileOptions = {}
+): Promise<LogDatabase> {
+  const largeFileWarningBytes =
+    options.largeFileWarningBytes ?? DEFAULT_LARGE_FILE_WARNING_BYTES;
+
+  if (file.size > largeFileWarningBytes && options.confirmLargeFile) {
+    const shouldContinue = await options.confirmLargeFile(
+      buildLargeFileWarning(file.name, file.size)
+    );
+
+    if (!shouldContinue) {
+      throw new Error("File loading cancelled by user");
+    }
+  }
+
+  const rawContent = normalizeContent(await file.text());
+  if (isProbablyBinary(rawContent)) {
+    throw new Error("File appears to be binary, not a text log");
+  }
+
+  const rawLines = splitLineRecords(rawContent);
+  const meaningfulLines = rawLines
+    .map((record) => record.text)
+    .filter((line) => line.trim().length > 0);
+
+  if (meaningfulLines.length === 0) {
+    throw new Error("File is empty");
+  }
+
+  const detection = detectFormat(meaningfulLines);
+  const format = detection.format;
+  const records = getRecordsForFormat(format, rawContent);
+
+  const parsedJsonRecords =
+    format.name === "json"
+      ? records
+          .map((record) => format.parse(record.text, record.lineNo))
+          .filter((record): record is ParsedLogRecord => record !== null)
+          .slice(0, 100)
+      : [];
+
+  const schema = getFullSchema(
+    format,
+    format.name === "json" ? inferJsonSchema(parsedJsonRecords) : undefined
+  );
+
+  const SQL = await getSqlModule();
+  const db = new SQL.Database();
+  currentDatabase = db;
+  createLogsTable(db, schema);
+
+  let batch: (string | number | null)[][] = [];
+  let rowCount = 0;
+  let skippedCount = 0;
+
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index];
+    const parsed =
+      format.parse(record.text, record.lineNo) ??
+      (format.name === "generic" ? parseGeneric(record.text, record.lineNo) : null);
+
     if (!parsed) {
-      parsed = { raw_line: line, line_no: i + 1 };
+      skippedCount += 1;
+      reportProgress(options.onProgress, {
+        current: index + 1,
+        total: records.length,
+      });
+      continue;
     }
-    
-    const values: (string | number | null)[] = [];
-    values.push(i + 1);
-    values.push(i + 1);
-    
-    for (const col of schema) {
-      const value = parsed[col.name];
-      values.push(value ?? null);
-    }
-    
-    if (hasTimestamp && parsed.timestamp) {
-      const ts = new Date(parsed.timestamp as string).getTime();
-      if (prevTimestamp !== null) {
-        const idle = ts - prevTimestamp;
-        values.push(idle);
-      } else {
-        values.push(0);
-      }
-      prevTimestamp = ts;
-    }
-    
-    batch.push(...values);
-    
-    if (batch.length >= batchSize * values.length || i === lines.length - 1) {
-      const placeholders = batch.map(() => '?').join(', ');
-      const insertSql = `INSERT INTO ${tableName} VALUES (${placeholders})`;
-      
-      try {
-        dbInstance.run(insertSql, batch);
-      } catch (e) {
-        console.error('Insert error:', e);
-      }
-      
+
+    batch.push(recordToRow(schema, parsed));
+
+    if (batch.length >= BATCH_SIZE) {
+      flushBatch(db, schema, batch);
+      rowCount += batch.length;
       batch = [];
     }
-  }
-  
-  if (hasTimestamp) {
-    try {
-      dbInstance.run(`CREATE INDEX IF NOT EXISTS idx_${tableName}_time ON ${tableName}(line_no)`);
-    } catch {}
-  }
-  
-  const rowCount = lines.length;
-  
-  const queryFn = (sql: string): QueryResult => {
-    if (!dbInstance) throw new Error('Database not initialized');
-    
-    const start = performance.now();
-    const result = dbInstance.exec(sql);
-    const executionTimeMs = performance.now() - start;
-    
-    if (result.length === 0) {
-      return { columns: [], values: [], rowCount: 0, executionTimeMs };
+
+    if ((index + 1) % 200 === 0 || index === records.length - 1) {
+      reportProgress(options.onProgress, {
+        current: index + 1,
+        total: records.length,
+      });
     }
-    
-    return {
-      columns: result[0].columns,
-      values: result[0].values.map(row => 
-        row.map(cell => {
-          if (cell instanceof Uint8Array) return null;
-          return cell;
-        })
-      ),
-      rowCount: result[0].values.length,
-      executionTimeMs,
-    };
-  };
-  
+  }
+
+  if (batch.length) {
+    flushBatch(db, schema, batch);
+    rowCount += batch.length;
+  }
+
+  createIndexes(db, schema);
+
+  let closed = false;
+
   return {
-    db: dbInstance,
+    db,
     format,
+    schema,
     rowCount,
-    query: queryFn,
-    close: () => {
-      if (dbInstance) {
-        dbInstance.close();
-        dbInstance = null;
+    skippedCount,
+    tableName: LOGS_TABLE_NAME,
+    query: (sql: string): QueryResult => {
+      if (closed) {
+        return {
+          columns: [],
+          rows: [],
+          error: "Database is closed",
+        };
+      }
+
+      try {
+        const result = db.exec(sql);
+        if (result.length === 0) {
+          return {
+            columns: [],
+            rows: [],
+          };
+        }
+
+        return {
+          columns: result[0].columns,
+          rows: normalizeQueryRows(result[0].values),
+        };
+      } catch (error) {
+        return {
+          columns: [],
+          rows: [],
+          error: error instanceof Error ? error.message : "Query failed",
+        };
+      }
+    },
+    close: (): void => {
+      if (closed) {
+        return;
+      }
+
+      db.close();
+      closed = true;
+
+      if (currentDatabase === db) {
+        currentDatabase = null;
       }
     },
   };
 }
 
 export function getDatabase(): SqlJsDatabase | null {
-  return dbInstance;
+  return currentDatabase;
 }
 
 export function closeDatabase(): void {
-  if (dbInstance) {
-    dbInstance.close();
-    dbInstance = null;
-    initPromise = null;
+  if (currentDatabase) {
+    currentDatabase.close();
+    currentDatabase = null;
   }
 }

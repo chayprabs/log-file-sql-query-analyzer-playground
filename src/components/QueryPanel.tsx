@@ -2,7 +2,6 @@
 
 import { useState } from 'react';
 import { useLogStore } from '@/stores/log-store';
-import { ALL_FORMATS } from '@/lib/parser/formats';
 
 export function QueryPanel() {
   const [query, setQuery] = useState('');

@@ -1,4 +1,4 @@
-import { LogFormat, FormatField, LogLevel } from '@/types';
+import { LogFormat } from '@/types';
 
 export const SYSLOG_FORMAT: LogFormat = {
   name: 'syslog_log',

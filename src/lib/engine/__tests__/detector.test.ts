@@ -1,105 +1,103 @@
-import { describe, it, expect } from 'vitest';
-import { detectFormat, detectWithConfidence } from '../detector';
-import { FORMATS } from '../formats';
+import { describe, expect, it } from "vitest";
+import { detectFormat, detectWithConfidence } from "../detector";
 
-describe('Format Detector', () => {
-  const nginxLines = [
-    '192.168.1.1 - - [10/Oct/2020:13:55:36 -0700] "GET /api/users HTTP/1.1" 200 432 "-" "Mozilla/5.0"',
-    '10.0.0.1 - - [10/Oct/2020:13:55:37 -0700] "POST /login HTTP/1.1" 200 5120 "-" "curl/7.68"',
-    '192.168.1.2 - - [10/Oct/2020:13:55:38 -0700] "GET /assets/main.js HTTP/1.1" 304 0 "-" "Chrome"',
-  ];
-  
-  it('detects nginx access log format', () => {
-    const result = detectFormat(nginxLines);
-    expect(result.format.name).toBe('nginx_access');
-    expect(result.score).toBeGreaterThan(0);
+function buildNginxLines(count: number): string[] {
+  return Array.from({ length: count }, (_, index) => {
+    return `192.168.1.${index} - - [10/Oct/2024:13:55:${String(index)
+      .padStart(2, "0")} -0700] "GET /api/${index} HTTP/1.1" 200 ${200 + index} "-" "Mozilla/5.0"`;
   });
-  
-  it('detects access log format', () => {
-    const apacheLines = [
-      '127.0.0.1 - - [10/Oct/2000:13:55:36 -0700] "GET / HTTP/1.0" 200 1024',
-      '192.168.1.1 - admin [10/Oct/2000:13:55:37 -0700] "POST /admin HTTP/1.0" 401 0',
-    ];
-    const result = detectFormat(apacheLines);
-    expect(['nginx_access', 'apache_access']).toContain(result.format.name);
+}
+
+function buildSyslogLines(count: number): string[] {
+  return Array.from({ length: count }, (_, index) => {
+    return `Jan ${String((index % 9) + 1).padStart(2, " ")} 10:30:${String(index)
+      .padStart(2, "0")} host${index % 3} sshd[${1000 + index}]: Accepted publickey`;
   });
-  
-  it('detects syslog format', () => {
-    const syslogLines = [
-      'Jan 15 10:30:00 server1 sshd[1234]: Accepted publickey',
-      'Jan 15 10:30:01 server2 kernel: USB device connected',
-      'Jan 15 10:30:02 server1 systemd[1]: Started some service',
-    ];
-    const result = detectFormat(syslogLines);
-    expect(result.format.name).toBe('syslog');
+}
+
+describe("detectFormat", () => {
+  it("detects nginx access logs from a 20-line sample", () => {
+    const result = detectFormat(buildNginxLines(20));
+
+    expect(result.format.name).toBe("nginx_access");
+    expect(result.matchedLines).toBe(20);
+    expect(result.confidence).toBe(1);
   });
-  
-  it('detects journald format', () => {
-    const journaldLines = [
-      '{"__REALTIME_TIMESTAMP":"1705312200000000","_SYSTEMD_UNIT":"sshd.service","MESSAGE":"test"}',
-      '{"__REALTIME_TIMESTAMP":"1705312200000001","_SYSTEMD_UNIT":"httpd.service","MESSAGE":"started"}',
-    ];
-    const result = detectFormat(journaldLines);
-    expect(result.format.name).toBe('journald');
+
+  it("detects syslog from a 20-line sample", () => {
+    const result = detectFormat(buildSyslogLines(20));
+
+    expect(result.format.name).toBe("syslog");
+    expect(result.matchedLines).toBe(20);
   });
-  
-  it('detects generic for plain text', () => {
-    const plainLines = [
-      'Some random log message',
-      'Another info message',
-      'Error occurred at line 42',
-    ];
-    const result = detectFormat(plainLines);
-    expect(result.format.name).toBe('generic');
+
+  it("ignores leading comment lines", () => {
+    const lines = ["# comment", "# another comment", ...buildNginxLines(20)];
+
+    const result = detectFormat(lines);
+
+    expect(result.format.name).toBe("nginx_access");
+    expect(result.sampledLines).toBe(20);
   });
-  
-  it('handles empty lines array', () => {
+
+  it("returns the generic fallback for an empty file", () => {
     const result = detectFormat([]);
-    expect(result.format.name).toBe('generic');
+
+    expect(result.format.name).toBe("generic");
+    expect(result.confidence).toBe(0);
   });
-  
-  it('handles empty strings', () => {
-    const result = detectFormat(['', '   ', '']);
-    expect(result.format).toBeDefined();
+
+  it("handles a one-line file without crashing", () => {
+    const result = detectFormat([
+      '127.0.0.1 - - [10/Oct/2024:13:55:36 -0700] "GET / HTTP/1.1" 200 123 "-" "curl/8.0"',
+    ]);
+
+    expect(result.format.name).toBe("nginx_access");
+    expect(result.sampledLines).toBe(1);
+  });
+
+  it("picks the majority format in a mixed file", () => {
+    const lines = [
+      ...buildSyslogLines(12),
+      ...buildNginxLines(8),
+    ];
+
+    const result = detectFormat(lines);
+
+    expect(result.format.name).toBe("syslog");
+    expect(result.matchedLines).toBe(12);
+  });
+
+  it("falls back to generic when confidence stays below the threshold", () => {
+    const lines = [
+      ...buildNginxLines(6),
+      ..."plain text line\nanother plain text line\nthird plain text line\nfourth plain text line\nfifth plain text line\nsixth plain text line\nseventh plain text line\neighth plain text line\nninth plain text line\nplain text line ten\nplain text line eleven\nplain text line twelve\nplain text line thirteen\nplain text line fourteen".split(
+        "\n"
+      ),
+    ];
+
+    const result = detectFormat(lines);
+
+    expect(result.format.name).toBe("generic");
+    expect(result.confidence).toBe(0);
+  });
+
+  it("uses real JSON parsing instead of brace heuristics", () => {
+    const result = detectFormat([
+      "{ definitely not valid json",
+      '{"level":"info","message":"ok"}',
+      '{"level":"warn","message":"still ok"}',
+    ]);
+
+    expect(result.format.name).toBe("json");
   });
 });
 
-describe('Detector Confidence', () => {
-  it('returns high confidence for clean format', () => {
-    const nginxLines = [
-      '192.168.1.1 - - [10/Oct/2020:13:55:36 -0700] "GET / HTTP/1.1" 200 100',
-    ];
-    const { confidence } = detectWithConfidence(nginxLines);
-    expect(confidence).toBeGreaterThan(50);
-  });
-  
-  it('returns lower confidence for mixed content', () => {
-    const mixedLines = [
-      'some random text',
-      '192.168.1.1 - - [10/Oct/2020:13:55:36 -0700] "GET / HTTP/1.1" 200 100',
-      'Jan 15 10:30:00 server sshd: test message',
-    ];
-    const { confidence } = detectWithConfidence(mixedLines);
-    expect(confidence).toBeLessThan(70);
-  });
-});
+describe("detectWithConfidence", () => {
+  it("returns percentage confidence for clean samples", () => {
+    const result = detectWithConfidence(buildNginxLines(20));
 
-describe('Format Prioritization', () => {
-  it('prefers specific format over generic', () => {
-    const specificLines = [
-      '192.168.1.1 - - [10/Oct/2020:13:55:36 -0700] "GET /api HTTP/1.1" 200 100',
-    ];
-    const result = detectFormat(specificLines);
-    expect(result.format.name).not.toBe('generic');
-  });
-  
-  it('detects JSON-based formats for JSON lines', () => {
-    const jsonLines = [
-      '{"level":"info","message":"test"}',
-      '{"level":"warn","message":"test2"}',
-    ];
-    const result = detectFormat(jsonLines);
-    const validFormats = ['json', 'journald'];
-    expect(validFormats).toContain(result.format.name);
+    expect(result.format.name).toBe("nginx_access");
+    expect(result.confidence).toBe(100);
   });
 });

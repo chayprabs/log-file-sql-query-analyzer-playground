@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "serve:out": "node scripts/serve-static.cjs out 3000",
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",

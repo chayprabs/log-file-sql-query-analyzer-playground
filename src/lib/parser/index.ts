@@ -9,12 +9,10 @@ const SYSLOG_REGEX = /^(?:(?<timestamp>\S{3,8}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}|[\d
 
 const RFC5424_REGEX = /^<(?<log_pri>\d+)>(?<version>\d+)\s+(?<timestamp>[\d\-T:.+Z]+)\s+(?<log_hostname>[^\s]+)\s+(?<log_syslog_tag>[^\s]+)\s+(?<log_msgid>[^\s]+)\s+(?<log_struct>[^\s]+)\s+(?<log_body>.*)$/;
 
-const GLOG_REGEX = /^(?<level>[IWECF])(?<timestamp>\d{8}\s+\d{2}:\d{2}:\d{2}\.\d{6})\s+(?<thread>\d+)\s+(?<src_file>[^:]+):(?<src_line>\d+)\]\s+(?<body>.*)$/;
-
 function parseSyslog(line: string, format: LogFormat): ParsedLogLine | null {
   const rfcMatch = line.match(RFC5424_REGEX);
   if (rfcMatch?.groups) {
-    const { timestamp, log_hostname, log_procname, log_syslog_tag, log_msgid, log_body } = rfcMatch.groups;
+    const { timestamp, log_hostname, log_syslog_tag, log_msgid, log_body } = rfcMatch.groups;
     const timeResult = parseTimestamp(timestamp);
     return {
       lineNumber: 0,

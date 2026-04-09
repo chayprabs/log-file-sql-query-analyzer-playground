@@ -1,6 +1,6 @@
 'use client';
 
-import { useLogStore, selectFilteredLines } from '@/stores/log-store';
+import { useLogStore } from '@/stores/log-store';
 import { LogLevel } from '@/types';
 import { getLevelColor } from '@/lib/utils/log-levels';
 

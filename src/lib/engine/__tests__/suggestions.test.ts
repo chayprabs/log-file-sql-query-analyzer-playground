@@ -1,78 +1,65 @@
-import { describe, it, expect } from 'vitest';
-import { getSuggestions, getQuickSuggestions } from '../suggestions';
-import { FORMATS } from '../formats';
+import { describe, expect, it } from "vitest";
+import { getFormat } from "../formats";
+import { getQuickSuggestions, getSuggestions } from "../suggestions";
 
-describe('SQL Suggestions', () => {
-  it('returns nginx suggestions for nginx format', () => {
-    const suggestions = getSuggestions('nginx_access');
-    expect(suggestions.length).toBeGreaterThan(0);
-    expect(suggestions[0].sql).toContain('nginx');
+describe("getSuggestions", () => {
+  it("returns at least five suggestions for each built-in format", () => {
+    const formatNames = [
+      "nginx_access",
+      "apache_access",
+      "syslog",
+      "journald",
+      "json",
+      "generic",
+    ] as const;
+
+    for (const formatName of formatNames) {
+      const format = getFormat(formatName);
+      expect(format).toBeDefined();
+
+      const suggestions = getSuggestions(format!);
+      expect(suggestions.length).toBeGreaterThanOrEqual(5);
+      expect(suggestions.every((suggestion) => suggestion.sql.includes("logs"))).toBe(
+        true
+      );
+    }
   });
-  
-  it('returns apache suggestions for apache format', () => {
-    const suggestions = getSuggestions('apache_access');
-    expect(suggestions.length).toBeGreaterThan(0);
-  });
-  
-  it('returns syslog suggestions for syslog format', () => {
-    const suggestions = getSuggestions('syslog');
-    expect(suggestions.length).toBeGreaterThan(0);
-    expect(suggestions[0].sql).toContain('syslog');
-  });
-  
-  it('returns journald suggestions for journald format', () => {
-    const suggestions = getSuggestions('journald');
-    expect(suggestions.length).toBeGreaterThan(0);
-    expect(suggestions[0].label).toBeDefined();
-  });
-  
-  it('returns generic suggestions for unknown format', () => {
-    const suggestions = getSuggestions('unknown_format');
-    expect(suggestions.length).toBeGreaterThan(0);
-    expect(suggestions[0].sql).toContain('generic');
-  });
-  
-  it('returns appropriate suggestions when passed format object', () => {
-    const nginxFormat = FORMATS.find(f => f.name === 'nginx_access')!;
-    const suggestions = getSuggestions(nginxFormat);
-    expect(suggestions.length).toBeGreaterThan(0);
+
+  it("generates schema-aware JSON suggestions when level columns exist", () => {
+    const format = getFormat("json");
+    if (!format) {
+      throw new Error("JSON format missing");
+    }
+
+    const suggestions = getSuggestions({
+      format,
+      tableName: "logs",
+      schema: [
+        { name: "line_no", type: "INTEGER" },
+        { name: "raw_line", type: "TEXT" },
+        { name: "level", type: "TEXT" },
+        { name: "message", type: "TEXT" },
+      ],
+    });
+
+    expect(
+      suggestions.some((suggestion) =>
+        suggestion.sql.includes("GROUP BY level")
+      )
+    ).toBe(true);
+    expect(
+      suggestions.some((suggestion) =>
+        suggestion.sql.includes("pragma_table_info('logs')")
+      )
+    ).toBe(true);
   });
 });
 
-describe('Quick Suggestions', () => {
-  it('returns limited suggestions for quick access', () => {
-    const suggestions = getQuickSuggestions('nginx_access');
-    expect(suggestions.length).toBeLessThanOrEqual(3);
-  });
-  
-  it('includes status code suggestions', () => {
-    const suggestions = getSuggestions('nginx_access');
-    const hasStatusQuery = suggestions.some(s => s.label.toLowerCase().includes('status'));
-    expect(hasStatusQuery).toBe(true);
-  });
-});
+describe("getQuickSuggestions", () => {
+  it("returns only the first three suggestions", () => {
+    const quickSuggestions = getQuickSuggestions("nginx_access");
 
-describe('Suggestion Content', () => {
-  it('all suggestions have labels', () => {
-    const suggestions = getSuggestions('nginx_access');
-    for (const s of suggestions) {
-      expect(s.label).toBeDefined();
-      expect(s.label.length).toBeGreaterThan(0);
-    }
-  });
-  
-  it('all suggestions have SQL queries', () => {
-    const suggestions = getSuggestions('nginx_access');
-    for (const s of suggestions) {
-      expect(s.sql).toBeDefined();
-      expect(s.sql.toUpperCase().startsWith('SELECT')).toBe(true);
-    }
-  });
-  
-  it('all suggestions have descriptions', () => {
-    const suggestions = getSuggestions('nginx_access');
-    for (const s of suggestions) {
-      expect(s.description).toBeDefined();
-    }
+    expect(quickSuggestions).toHaveLength(3);
+    expect(quickSuggestions[0].label).toBe("Status code breakdown");
   });
 });

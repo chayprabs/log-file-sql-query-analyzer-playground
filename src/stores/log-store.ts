@@ -38,7 +38,7 @@ export const useLogStore = create<LogStore>((set, get) => ({
   searchQuery: '',
   queryHistory: [],
   
-  loadFile: async (content: string, filename?: string) => {
+  loadFile: async (content: string) => {
     set({ isLoading: true, error: null });
     
     try {

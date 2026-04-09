@@ -1,155 +1,198 @@
-import { describe, it, expect } from 'vitest';
-import { FORMATS, getFormat, parseNginx, parseApache, parseSyslog, parseJson, parseJournald, parseGeneric } from '../formats';
+import { describe, expect, it } from "vitest";
+import {
+  getFormat,
+  parseApache,
+  parseGeneric,
+  parseJournald,
+  parseJson,
+  parseNginx,
+  parseSyslog,
+} from "../formats";
 
-describe('Nginx Access Parser', () => {
-  const nginxLine = '192.168.1.1 - - [10/Oct/2020:13:55:36 -0700] "GET /api/users HTTP/1.1" 200 432 "-" "Mozilla/5.0"';
-  
-  it('parses valid nginx combined log line', () => {
-    const result = FORMATS.find(f => f.name === 'nginx_access')!.parse(nginxLine);
-    expect(result).not.toBeNull();
-    expect(result?.remote_addr).toBe('192.168.1.1');
-    expect(result?.status).toBe(200);
-    expect(result?.method).toBe('GET');
-    expect(result?.uri).toBe('/api/users');
+describe("parseNginx", () => {
+  it("parses the canonical combined log sample", () => {
+    const line =
+      '127.0.0.1 - frank [10/Oct/2000:13:55:36 -0700] "GET /apache_pb.gif HTTP/1.0" 200 2326 "http://www.example.com/start.html" "Mozilla/4.08"';
+
+    const parsed = parseNginx(line);
+
+    expect(parsed).toMatchObject({
+      remote_addr: "127.0.0.1",
+      remote_user: "frank",
+      time_local: "10/Oct/2000:13:55:36 -0700",
+      request: "GET /apache_pb.gif HTTP/1.0",
+      request_method: "GET",
+      request_target: "/apache_pb.gif",
+      request_protocol: "HTTP/1.0",
+      status: 200,
+      body_bytes_sent: 2326,
+      http_referer: "http://www.example.com/start.html",
+      http_user_agent: "Mozilla/4.08",
+    });
+    expect(parsed?.timestamp).toBe("2000-10-10T20:55:36.000Z");
   });
-  
-  it('maps status code 404 to warning level logic', () => {
-    const line404 = '192.168.1.1 - - [10/Oct/2020:13:55:36 -0700] "GET /missing HTTP/1.1" 404 123 "-" "Mozilla/5.0"';
-    const result = FORMATS.find(f => f.name === 'nginx_access')!.parse(line404);
-    expect(result?.status).toBe(404);
+
+  it("parses IPv6 addresses", () => {
+    const line =
+      '2001:db8::1 - - [10/Oct/2000:13:55:36 -0700] "GET /index.html HTTP/1.1" 200 512 "-" "curl/8.0"';
+
+    const parsed = parseNginx(line);
+
+    expect(parsed?.remote_addr).toBe("2001:db8::1");
+    expect(parsed?.status).toBe(200);
   });
-  
-  it('returns null for malformed line', () => {
-    const malformed = 'this is not a nginx log line';
-    const result = FORMATS.find(f => f.name === 'nginx_access')!.parse(malformed);
-    expect(result).toBeNull();
+
+  it("keeps URLs with spaces intact", () => {
+    const line =
+      '127.0.0.1 - - [10/Oct/2000:13:55:36 -0700] "GET /search?q=hello world HTTP/1.1" 200 123 "-" "Mozilla/5.0"';
+
+    const parsed = parseNginx(line);
+
+    expect(parsed?.request_target).toBe("/search?q=hello world");
   });
-  
-  it('handles missing optional fields', () => {
-    const minimal = '192.168.1.1 - - [10/Oct/2020:13:55:36 -0700] "GET / HTTP/1.1" 200 0';
-    const result = FORMATS.find(f => f.name === 'nginx_access')!.parse(minimal);
-    expect(result).not.toBeNull();
-    expect(result?.remote_addr).toBe('192.168.1.1');
-    expect(result?.body_bytes_sent).toBe(0);
+
+  it('handles 400 lines whose request field is "-"', () => {
+    const line =
+      '127.0.0.1 - - [10/Oct/2000:13:55:36 -0700] "-" 400 0 "-" "-"';
+
+    const parsed = parseNginx(line);
+
+    expect(parsed?.request).toBe("-");
+    expect(parsed?.request_method).toBeNull();
+    expect(parsed?.status).toBe(400);
+  });
+
+  it("returns null for garbage input without throwing", () => {
+    expect(() => parseNginx("not a log line at all %%% garbage")).not.toThrow();
+    expect(parseNginx("not a log line at all %%% garbage")).toBeNull();
   });
 });
 
-describe('Apache Access Parser', () => {
-  const apacheLine = '127.0.0.1 - frank [10/Oct/2000:13:55:36 -0700] "GET /apache_pb.gif HTTP/1.0" 200 2326';
-  
-  it('parses valid apache common log line', () => {
-    const result = FORMATS.find(f => f.name === 'apache_access')!.parse(apacheLine);
-    expect(result).not.toBeNull();
-    expect(result?.host).toBe('127.0.0.1');
-    expect(result?.user).toBe('frank');
-    expect(result?.status).toBe(200);
+describe("parseApache", () => {
+  it("parses combined-format apache lines", () => {
+    const line =
+      '127.0.0.1 - frank [10/Oct/2000:13:55:36 -0700] "GET /apache_pb.gif HTTP/1.0" 200 2326 "http://www.example.com/start.html" "Mozilla/4.08"';
+
+    const parsed = parseApache(line);
+
+    expect(parsed).toMatchObject({
+      vhost: null,
+      remote_addr: "127.0.0.1",
+      remote_user: "frank",
+      request: "GET /apache_pb.gif HTTP/1.0",
+      status: 200,
+      body_bytes_sent: 2326,
+    });
   });
-  
-  it('handles dash user as null', () => {
-    const line = '127.0.0.1 - - [10/Oct/2000:13:55:36 -0700] "GET / HTTP/1.0" 200 100';
-    const result = FORMATS.find(f => f.name === 'apache_access')!.parse(line);
-    expect(result?.user).toBeNull();
-  });
-  
-  it('returns null for malformed line', () => {
-    const malformed = 'not an apache log';
-    const result = FORMATS.find(f => f.name === 'apache_access')!.parse(malformed);
-    expect(result).toBeNull();
+
+  it("parses virtual-host-prefixed apache lines", () => {
+    const line =
+      'example.com 127.0.0.1 - frank [10/Oct/2000:13:55:36 -0700] "GET /apache_pb.gif HTTP/1.0" 200 2326';
+
+    const parsed = parseApache(line);
+
+    expect(parsed?.vhost).toBe("example.com");
+    expect(parsed?.remote_addr).toBe("127.0.0.1");
   });
 });
 
-describe('Syslog Parser', () => {
-  const syslogLine = 'Jan 15 10:30:00 server1 sshd[1234]: Accepted publickey for user';
-  
-  it('parses standard syslog line', () => {
-    const result = FORMATS.find(f => f.name === 'syslog')!.parse(syslogLine);
-    expect(result).not.toBeNull();
-    expect(result?.hostname).toBeDefined();
+describe("parseSyslog", () => {
+  it("parses RFC 3164 syslog with priority", () => {
+    const line =
+      '<34>Oct 11 22:14:15 mymachine su: "su root" failed for lonvick on /dev/pts/8';
+
+    const parsed = parseSyslog(line);
+
+    expect(parsed).toMatchObject({
+      priority: 34,
+      timestamp_raw: "Oct 11 22:14:15",
+      hostname: "mymachine",
+      tag: "su",
+      message: '"su root" failed for lonvick on /dev/pts/8',
+    });
+    expect(parsed?.timestamp).toMatch(/T22:14:15\.000Z$/);
   });
-  
-  it('extracts message after colon', () => {
-    const line = 'Jan 15 10:30:00 server1 sshd: Connection closed';
-    const result = FORMATS.find(f => f.name === 'syslog')!.parse(line);
-    expect(result).not.toBeNull();
-    expect(result?.message).toContain('Connection closed');
+
+  it("handles double-space day values", () => {
+    const parsed = parseSyslog("Jan  1 00:00:01 host kernel: boot");
+
+    expect(parsed?.timestamp_raw).toBe("Jan 1 00:00:01");
+    expect(parsed?.tag).toBe("kernel");
   });
 });
 
-describe('JSON Parser', () => {
-  const jsonLine = '{"level":30,"message":"Server started","timestamp":"2024-01-15T10:30:00Z","value":123}';
-  
-  it('parses valid JSON line', () => {
-    const result = FORMATS.find(f => f.name === 'json')!.parse(jsonLine);
-    expect(result).not.toBeNull();
-    expect(result?.level).toBe(30);
-    expect(result?.message).toBe('Server started');
-    expect(result?.value).toBe(123);
+describe("parseJson", () => {
+  it("parses a single JSON object line", () => {
+    const parsed = parseJson('{"level":"info","message":"hello","value":3}');
+
+    expect(parsed).toMatchObject({
+      level: "info",
+      message: "hello",
+      value: 3,
+    });
   });
-  
-  it('handles null values', () => {
-    const line = '{"key":null,"value":"test"}';
-    const result = FORMATS.find(f => f.name === 'json')!.parse(line);
-    expect(result?.key).toBeNull();
-    expect(result?.value).toBe('test');
+
+  it("stringifies array values instead of crashing", () => {
+    const parsed = parseJson('{"tags":["a","b"],"count":2}');
+
+    expect(parsed?.tags).toBe('["a","b"]');
+    expect(parsed?.count).toBe(2);
   });
-  
-  it('returns null for invalid JSON', () => {
-    const invalid = 'not valid json {';
-    const result = FORMATS.find(f => f.name === 'json')!.parse(invalid);
-    expect(result).toBeNull();
+
+  it("preserves null JSON values", () => {
+    const parsed = parseJson('{"message":null,"ok":true}');
+
+    expect(parsed?.message).toBeNull();
+    expect(parsed?.ok).toBe(1);
+  });
+
+  it("skips invalid JSON lines gracefully", () => {
+    expect(parseJson("not-json")).toBeNull();
   });
 });
 
-describe('Journald Parser', () => {
-  const journaldLine = '{"__REALTIME_TIMESTAMP":"1705312200000000","_SYSTEMD_UNIT":"sshd.service","SYSLOG_IDENTIFIER":"sshd","_PID":1234,"PRIORITY":"6","MESSAGE":"Accepted publickey"}';
-  
-  it('parses valid journald JSON line', () => {
-    const result = FORMATS.find(f => f.name === 'journald')!.parse(journaldLine);
-    expect(result).not.toBeNull();
-    expect(result?.__REALTIME_TIMESTAMP).toBe('1705312200000000');
-    expect(result?._SYSTEMD_UNIT).toBe('sshd.service');
-    expect(result?._PID).toBe(1234);
+describe("parseJournald", () => {
+  it("parses key=value journald export records", () => {
+    const record =
+      "__REALTIME_TIMESTAMP=1614000000000000\n_HOSTNAME=myhost\nMESSAGE=hello world";
+
+    const parsed = parseJournald(record);
+
+    expect(parsed).toMatchObject({
+      __REALTIME_TIMESTAMP: "1614000000000000",
+      _HOSTNAME: "myhost",
+      MESSAGE: "hello world",
+    });
+    expect(parsed?.timestamp).toBe("2021-02-22T13:20:00.000Z");
   });
-  
-  it('returns null for non-journald JSON', () => {
-    const line = '{"level":"info","message":"test"}';
-    const result = FORMATS.find(f => f.name === 'journald')!.parse(line);
-    expect(result).toBeNull();
-  });
-  
-  it('handles missing fields gracefully', () => {
-    const minimal = '{"MESSAGE":"test"}';
-    const result = FORMATS.find(f => f.name === 'journald')!.parse(minimal);
-    expect(result).not.toBeNull();
-    expect(result?.MESSAGE).toBe('test');
+
+  it("preserves multiline journald messages", () => {
+    const record =
+      "__REALTIME_TIMESTAMP=1614000000000000\nMESSAGE=hello\n world";
+
+    const parsed = parseJournald(record);
+
+    expect(parsed?.MESSAGE).toBe("hello\nworld");
   });
 });
 
-describe('Generic Parser', () => {
-  it('wraps any line in generic format', () => {
-    const line = 'any random text log line';
-    const result = FORMATS.find(f => f.name === 'generic')!.parse(line);
-    expect(result).not.toBeNull();
-    expect(result?.raw_line).toBe(line);
-  });
-  
-  it('preserves line number field', () => {
-    const line = 'test line';
-    const result = FORMATS.find(f => f.name === 'generic')!.parse(line);
-    expect(result?.line_no).toBe(0);
+describe("parseGeneric", () => {
+  it("always succeeds and includes line_no plus raw_line", () => {
+    const parsed = parseGeneric("any random log line", 42);
+
+    expect(parsed).toEqual({
+      line_no: 42,
+      raw_line: "any random log line",
+    });
   });
 });
 
-describe('Format Schema', () => {
-  it('nginx has correct schema columns', () => {
-    const nginx = getFormat('nginx_access');
-    expect(nginx?.schema).toHaveLength(8);
-    expect(nginx?.schema.find(c => c.name === 'status')?.type).toBe('INTEGER');
-  });
-  
-  it('syslog has correct schema columns', () => {
-    const syslog = getFormat('syslog');
-    expect(syslog?.schema).toHaveLength(5);
-    expect(syslog?.schema.find(c => c.name === 'hostname')?.type).toBe('TEXT');
+describe("format registry", () => {
+  it("exposes the expected core formats", () => {
+    expect(getFormat("nginx_access")?.displayName).toBe("Nginx Access Log");
+    expect(getFormat("apache_access")?.displayName).toBe("Apache Access Log");
+    expect(getFormat("syslog")?.displayName).toContain("Syslog");
+    expect(getFormat("json")?.displayName).toBe("JSON Lines");
+    expect(getFormat("generic")?.displayName).toBe("Generic Text");
   });
 });

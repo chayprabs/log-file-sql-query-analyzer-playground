@@ -14,6 +14,11 @@ import {
   LogDatabase,
   QueryResult,
 } from "@/lib/engine/db";
+import type { LogFormat } from "@/lib/engine/formats";
+
+export interface LoadFileOptions {
+  formatOverride?: LogFormat["name"];
+}
 
 interface LogContextType {
   db: LogDatabase | null;
@@ -22,26 +27,14 @@ interface LogContextType {
   fileName: string | null;
   progress: LoadProgress | null;
   clearError: () => void;
-  loadFile: (file: File) => Promise<boolean>;
+  loadFile: (file: File, options?: LoadFileOptions) => Promise<boolean>;
   runQuery: (sql: string) => QueryResult;
 }
 
 const LogContext = createContext<LogContextType | undefined>(undefined);
 
-const SOFT_WARNING_THRESHOLD = 50 * 1024 * 1024;
-const LARGE_WARNING_THRESHOLD = 100 * 1024 * 1024;
-
-function getLargeFileMessage(fileSize: number): string {
-  if (fileSize > LARGE_WARNING_THRESHOLD) {
-    return "This file is large and may take 30+ seconds to parse. Continue?";
-  }
-
-  if (fileSize > SOFT_WARNING_THRESHOLD) {
-    return "This file is large and may take noticeable time to parse. Continue?";
-  }
-
-  return "";
-}
+const MAX_FILE_BYTES = 500 * 1024 * 1024;
+const LARGE_CONFIRM_BYTES = 100 * 1024 * 1024;
 
 export function LogProvider({ children }: { children: ReactNode }) {
   const [db, setDb] = useState<LogDatabase | null>(null);
@@ -63,25 +56,35 @@ export function LogProvider({ children }: { children: ReactNode }) {
     setError(null);
   }, []);
 
-  const loadFile = useCallback(async (file: File): Promise<boolean> => {
+  const loadFile = useCallback(async (file: File, options?: LoadFileOptions): Promise<boolean> => {
+    if (file.size > MAX_FILE_BYTES) {
+      setError("File is too large. Maximum is 500 MB.");
+      return false;
+    }
+
+    if (typeof window !== "undefined" && db) {
+      const shouldReplace = window.confirm("Replace the current file?");
+      if (!shouldReplace) {
+        return false;
+      }
+    }
+
+    if (typeof window !== "undefined" && file.size > LARGE_CONFIRM_BYTES) {
+      const shouldContinue = window.confirm(
+        "This file is large and may take 30+ seconds to parse. Continue?"
+      );
+      if (!shouldContinue) {
+        return false;
+      }
+    }
+
     setLoading(true);
     setError(null);
     setProgress({ current: 0, total: 0 });
 
     try {
-      const warningMessage = getLargeFileMessage(file.size);
-      if (warningMessage && typeof window !== "undefined") {
-        const shouldContinue = window.confirm(warningMessage);
-        if (!shouldContinue) {
-          setProgress(null);
-          setLoading(false);
-          return false;
-        }
-      }
-
       const nextDb = await loadLogFileDb(file, {
-        confirmLargeFile: (warning) =>
-          typeof window === "undefined" ? true : window.confirm(warning),
+        formatOverride: options?.formatOverride,
         onProgress: (nextProgress) => {
           setProgress(nextProgress);
         },
@@ -106,19 +109,22 @@ export function LogProvider({ children }: { children: ReactNode }) {
     } finally {
       setLoading(false);
     }
-  }, []);
-
-  const runQuery = useCallback((sql: string): QueryResult => {
-    if (!db) {
-      return {
-        columns: [],
-        rows: [],
-        error: "No log file is loaded.",
-      };
-    }
-
-    return db.query(sql);
   }, [db]);
+
+  const runQuery = useCallback(
+    (sql: string): QueryResult => {
+      if (!db) {
+        return {
+          columns: [],
+          rows: [],
+          error: "No log file is loaded.",
+        };
+      }
+
+      return db.query(sql);
+    },
+    [db]
+  );
 
   return (
     <LogContext.Provider

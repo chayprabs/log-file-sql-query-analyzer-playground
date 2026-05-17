@@ -150,7 +150,7 @@ function buildJournaldSuggestions(tableName: string): QuerySuggestion[] {
 }
 
 function buildJsonSuggestions(schema: ColumnDef[], tableName: string): QuerySuggestion[] {
-  const effectiveSchema =
+  const effectiveSchema: ColumnDef[] =
     schema.length > 0
       ? schema
       : [

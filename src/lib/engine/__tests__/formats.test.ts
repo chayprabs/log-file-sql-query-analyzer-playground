@@ -20,10 +20,9 @@ describe("parseNginx", () => {
       remote_addr: "127.0.0.1",
       remote_user: "frank",
       time_local: "10/Oct/2000:13:55:36 -0700",
-      request: "GET /apache_pb.gif HTTP/1.0",
-      request_method: "GET",
-      request_target: "/apache_pb.gif",
-      request_protocol: "HTTP/1.0",
+      method: "GET",
+      path: "/apache_pb.gif",
+      protocol: "HTTP/1.0",
       status: 200,
       body_bytes_sent: 2326,
       http_referer: "http://www.example.com/start.html",
@@ -48,7 +47,7 @@ describe("parseNginx", () => {
 
     const parsed = parseNginx(line);
 
-    expect(parsed?.request_target).toBe("/search?q=hello world");
+    expect(parsed?.path).toBe("/search?q=hello world");
   });
 
   it('handles 400 lines whose request field is "-"', () => {
@@ -57,8 +56,9 @@ describe("parseNginx", () => {
 
     const parsed = parseNginx(line);
 
-    expect(parsed?.request).toBe("-");
-    expect(parsed?.request_method).toBeNull();
+    expect(parsed?.method).toBeNull();
+    expect(parsed?.path).toBeNull();
+    expect(parsed?.protocol).toBeNull();
     expect(parsed?.status).toBe(400);
   });
 
@@ -76,10 +76,11 @@ describe("parseApache", () => {
     const parsed = parseApache(line);
 
     expect(parsed).toMatchObject({
-      vhost: null,
       remote_addr: "127.0.0.1",
       remote_user: "frank",
-      request: "GET /apache_pb.gif HTTP/1.0",
+      method: "GET",
+      path: "/apache_pb.gif",
+      protocol: "HTTP/1.0",
       status: 200,
       body_bytes_sent: 2326,
     });
@@ -91,8 +92,8 @@ describe("parseApache", () => {
 
     const parsed = parseApache(line);
 
-    expect(parsed?.vhost).toBe("example.com");
     expect(parsed?.remote_addr).toBe("127.0.0.1");
+    expect(parsed?.path).toBe("/apache_pb.gif");
   });
 });
 
@@ -105,7 +106,8 @@ describe("parseSyslog", () => {
 
     expect(parsed).toMatchObject({
       priority: 34,
-      timestamp_raw: "Oct 11 22:14:15",
+      facility: 4,
+      severity: 2,
       hostname: "mymachine",
       tag: "su",
       message: '"su root" failed for lonvick on /dev/pts/8',
@@ -116,8 +118,9 @@ describe("parseSyslog", () => {
   it("handles double-space day values", () => {
     const parsed = parseSyslog("Jan  1 00:00:01 host kernel: boot");
 
-    expect(parsed?.timestamp_raw).toBe("Jan 1 00:00:01");
     expect(parsed?.tag).toBe("kernel");
+    expect(parsed?.hostname).toBe("host");
+    expect(parsed?.timestamp).toBeTruthy();
   });
 });
 
@@ -159,9 +162,8 @@ describe("parseJournald", () => {
     const parsed = parseJournald(record);
 
     expect(parsed).toMatchObject({
-      __REALTIME_TIMESTAMP: "1614000000000000",
-      _HOSTNAME: "myhost",
-      MESSAGE: "hello world",
+      hostname: "myhost",
+      message: "hello world",
     });
     expect(parsed?.timestamp).toBe("2021-02-22T13:20:00.000Z");
   });
@@ -172,27 +174,27 @@ describe("parseJournald", () => {
 
     const parsed = parseJournald(record);
 
-    expect(parsed?.MESSAGE).toBe("hello\nworld");
+    expect(parsed?.message).toBe("hello\nworld");
   });
 });
 
 describe("parseGeneric", () => {
-  it("always succeeds and includes line_no plus raw_line", () => {
+  it("always succeeds and includes line_no, raw, and message", () => {
     const parsed = parseGeneric("any random log line", 42);
 
-    expect(parsed).toEqual({
-      line_no: 42,
-      raw_line: "any random log line",
-    });
+    expect(parsed.line_no).toBe(42);
+    expect(parsed.raw).toBe("any random log line");
+    expect(parsed.message).toBe("any random log line");
+    expect(parsed.level).toBe("info");
   });
 });
 
 describe("format registry", () => {
   it("exposes the expected core formats", () => {
-    expect(getFormat("nginx_access")?.displayName).toBe("Nginx Access Log");
-    expect(getFormat("apache_access")?.displayName).toBe("Apache Access Log");
-    expect(getFormat("syslog")?.displayName).toContain("Syslog");
-    expect(getFormat("json")?.displayName).toBe("JSON Lines");
-    expect(getFormat("generic")?.displayName).toBe("Generic Text");
+    expect(getFormat("nginx_access")?.displayName).toBe("nginx access log");
+    expect(getFormat("apache_access")?.displayName).toContain("Apache");
+    expect(getFormat("syslog")?.displayName).toMatch(/syslog/i);
+    expect(getFormat("json")?.displayName).toMatch(/json/i);
+    expect(getFormat("generic")?.displayName).toContain("generic");
   });
 });

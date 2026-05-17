@@ -1,3 +1,6 @@
+import { getLogLevelFromText } from "../utils/log-levels";
+import { formatTimestamp, parseTimestamp } from "../utils/timestamps";
+
 export type CellValue = string | number | null;
 
 export interface ColumnDef {
@@ -7,7 +10,7 @@ export interface ColumnDef {
 
 export interface ParsedLogRecord extends Record<string, CellValue> {
   line_no: number;
-  raw_line: string;
+  raw: string;
 }
 
 export interface LogFormat {
@@ -29,24 +32,19 @@ const ACCESS_COLUMNS: ColumnDef[] = [
   { name: "remote_user", type: "TEXT" },
   { name: "time_local", type: "TEXT" },
   { name: "timestamp", type: "TEXT" },
-  { name: "request", type: "TEXT" },
-  { name: "request_method", type: "TEXT" },
-  { name: "request_target", type: "TEXT" },
-  { name: "request_protocol", type: "TEXT" },
+  { name: "method", type: "TEXT" },
+  { name: "path", type: "TEXT" },
+  { name: "protocol", type: "TEXT" },
   { name: "status", type: "INTEGER" },
   { name: "body_bytes_sent", type: "INTEGER" },
   { name: "http_referer", type: "TEXT" },
   { name: "http_user_agent", type: "TEXT" },
 ];
 
-const APACHE_COLUMNS: ColumnDef[] = [
-  { name: "vhost", type: "TEXT" },
-  ...ACCESS_COLUMNS,
-];
-
 const SYSLOG_COLUMNS: ColumnDef[] = [
   { name: "priority", type: "INTEGER" },
-  { name: "timestamp_raw", type: "TEXT" },
+  { name: "facility", type: "INTEGER" },
+  { name: "severity", type: "INTEGER" },
   { name: "timestamp", type: "TEXT" },
   { name: "hostname", type: "TEXT" },
   { name: "tag", type: "TEXT" },
@@ -55,17 +53,22 @@ const SYSLOG_COLUMNS: ColumnDef[] = [
 ];
 
 const JOURNALD_COLUMNS: ColumnDef[] = [
-  { name: "__REALTIME_TIMESTAMP", type: "TEXT" },
   { name: "timestamp", type: "TEXT" },
-  { name: "_HOSTNAME", type: "TEXT" },
-  { name: "_SYSTEMD_UNIT", type: "TEXT" },
-  { name: "SYSLOG_IDENTIFIER", type: "TEXT" },
-  { name: "_PID", type: "INTEGER" },
-  { name: "PRIORITY", type: "INTEGER" },
-  { name: "MESSAGE", type: "TEXT" },
+  { name: "priority", type: "INTEGER" },
+  { name: "unit", type: "TEXT" },
+  { name: "hostname", type: "TEXT" },
+  { name: "identifier", type: "TEXT" },
+  { name: "pid", type: "INTEGER" },
+  { name: "message", type: "TEXT" },
 ];
 
-const RESERVED_COLUMN_NAMES = new Set(["line_no", "raw_line"]);
+const GENERIC_COLUMNS: ColumnDef[] = [
+  { name: "timestamp", type: "TEXT" },
+  { name: "level", type: "TEXT" },
+  { name: "message", type: "TEXT" },
+];
+
+const RESERVED_COLUMN_NAMES = new Set(["line_no", "raw"]);
 
 const ACCESS_LINE_REGEX =
   /^(?<remote_addr>\S+)\s+(?<remote_logname>\S+)\s+(?<remote_user>\S+)\s+\[(?<time_local>[^\]]+)\]\s+"(?<request>[^"]*|-)"\s+(?<status>\d{3})\s+(?<body_bytes_sent>\d+|-)(?:\s+"(?<http_referer>[^"]*)"\s+"(?<http_user_agent>[^"]*)")?\s*$/;
@@ -222,55 +225,54 @@ function parseEpochMicros(raw: string | null): string | null {
 }
 
 function splitRequest(request: string | undefined): {
-  request_method: string | null;
-  request_target: string | null;
-  request_protocol: string | null;
+  method: string | null;
+  path: string | null;
+  protocol: string | null;
 } {
   if (!request || request === "-") {
     return {
-      request_method: null,
-      request_target: null,
-      request_protocol: null,
+      method: null,
+      path: null,
+      protocol: null,
     };
   }
 
   const firstSpace = request.indexOf(" ");
   if (firstSpace === -1) {
     return {
-      request_method: null,
-      request_target: request,
-      request_protocol: null,
+      method: null,
+      path: request,
+      protocol: null,
     };
   }
 
   const lastSpace = request.lastIndexOf(" ");
   if (lastSpace <= firstSpace) {
     return {
-      request_method: request.slice(0, firstSpace) || null,
-      request_target: request.slice(firstSpace + 1) || null,
-      request_protocol: null,
+      method: request.slice(0, firstSpace) || null,
+      path: request.slice(firstSpace + 1) || null,
+      protocol: null,
     };
   }
 
   return {
-    request_method: request.slice(0, firstSpace) || null,
-    request_target: request.slice(firstSpace + 1, lastSpace) || null,
-    request_protocol: request.slice(lastSpace + 1) || null,
+    method: request.slice(0, firstSpace) || null,
+    path: request.slice(firstSpace + 1, lastSpace) || null,
+    protocol: request.slice(lastSpace + 1) || null,
   };
 }
 
 function buildAccessRecord(
   groups: Record<string, string>,
   line: string,
-  lineNo: number,
-  vhost: string | null
+  lineNo: number
 ): ParsedLogRecord {
   const request = groups.request ?? null;
+  const split = splitRequest(request ?? undefined);
 
   return {
     line_no: lineNo,
-    raw_line: line,
-    ...(vhost !== null ? { vhost } : {}),
+    raw: line,
     remote_addr: groups.remote_addr ?? null,
     remote_user:
       groups.remote_user && groups.remote_user !== "-"
@@ -278,8 +280,9 @@ function buildAccessRecord(
         : null,
     time_local: groups.time_local ?? null,
     timestamp: parseAccessTimestamp(groups.time_local),
-    request,
-    ...splitRequest(request ?? undefined),
+    method: split.method,
+    path: split.path,
+    protocol: split.protocol,
     status: parseInteger(groups.status),
     body_bytes_sent: parseInteger(groups.body_bytes_sent),
     http_referer:
@@ -391,6 +394,91 @@ function isJournaldJsonObject(value: unknown): boolean {
   );
 }
 
+const TIMESTAMP_JSON_KEYS = ["@timestamp", "timestamp", "time", "ts"] as const;
+const LEVEL_JSON_KEYS = ["level", "severity", "lvl"] as const;
+const MESSAGE_JSON_KEYS = ["message", "msg"] as const;
+
+function pickFirstTextValue(
+  source: Record<string, unknown>,
+  keys: readonly string[]
+): string | null {
+  for (const key of keys) {
+    if (!(key in source)) {
+      continue;
+    }
+
+    const value = source[key];
+    if (value === null || value === undefined) {
+      return null;
+    }
+
+    if (typeof value === "string") {
+      return value;
+    }
+
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return String(value);
+    }
+  }
+
+  return null;
+}
+
+function promoteJsonLineFields(
+  parsed: Record<string, unknown>,
+  flattened: Record<string, CellValue>
+): { timestamp: string | null; level: string | null; message: string | null } {
+  const timestamp =
+    pickFirstTextValue(parsed, TIMESTAMP_JSON_KEYS as unknown as string[]) ??
+    (() => {
+      for (const key of TIMESTAMP_JSON_KEYS) {
+        const flatKey = sanitizeJsonKey(key);
+        const candidate = flattened[flatKey];
+        if (typeof candidate === "string") {
+          return candidate;
+        }
+        if (typeof candidate === "number") {
+          return String(candidate);
+        }
+      }
+
+      return null;
+    })();
+
+  const level =
+    pickFirstTextValue(parsed, LEVEL_JSON_KEYS as unknown as string[]) ??
+    (() => {
+      for (const key of LEVEL_JSON_KEYS) {
+        const flatKey = sanitizeJsonKey(key);
+        const candidate = flattened[flatKey];
+        if (typeof candidate === "string") {
+          return candidate;
+        }
+        if (typeof candidate === "number") {
+          return String(candidate);
+        }
+      }
+
+      return null;
+    })();
+
+  const message =
+    pickFirstTextValue(parsed, MESSAGE_JSON_KEYS as unknown as string[]) ??
+    (() => {
+      for (const key of MESSAGE_JSON_KEYS) {
+        const flatKey = sanitizeJsonKey(key);
+        const candidate = flattened[flatKey];
+        if (typeof candidate === "string") {
+          return candidate;
+        }
+      }
+
+      return null;
+    })();
+
+  return { timestamp, level, message };
+}
+
 export function parseNginx(
   line: string,
   lineNo = 0
@@ -400,7 +488,7 @@ export function parseNginx(
     return null;
   }
 
-  return buildAccessRecord(match.groups, line, lineNo, null);
+  return buildAccessRecord(match.groups, line, lineNo);
 }
 
 export function parseApache(
@@ -409,12 +497,7 @@ export function parseApache(
 ): ParsedLogRecord | null {
   const vhostMatch = line.match(APACHE_VHOST_REGEX);
   if (vhostMatch?.groups) {
-    return buildAccessRecord(
-      vhostMatch.groups,
-      line,
-      lineNo,
-      vhostMatch.groups.vhost ?? null
-    );
+    return buildAccessRecord(vhostMatch.groups, line, lineNo);
   }
 
   const standardMatch = line.match(ACCESS_LINE_REGEX);
@@ -422,10 +505,7 @@ export function parseApache(
     return null;
   }
 
-  return {
-    ...buildAccessRecord(standardMatch.groups, line, lineNo, null),
-    vhost: null,
-  };
+  return buildAccessRecord(standardMatch.groups, line, lineNo);
 }
 
 export function parseSyslog(
@@ -444,12 +524,21 @@ export function parseSyslog(
   const tag = tagMatch?.groups?.tag ?? null;
   const pid = parseInteger(tagMatch?.groups?.pid);
   const message = tagMatch ? tagMatch.groups?.message ?? "" : rest;
+  const priority = parseInteger(match.groups.priority);
+  let facility: number | null = null;
+  let severity: number | null = null;
+
+  if (priority !== null) {
+    facility = Math.trunc(priority / 8);
+    severity = priority % 8;
+  }
 
   return {
     line_no: lineNo,
-    raw_line: line,
-    priority: parseInteger(match.groups.priority),
-    timestamp_raw: timestampRaw,
+    raw: line,
+    priority,
+    facility,
+    severity,
     timestamp: parseSyslogTimestamp(timestampRaw),
     hostname: match.groups.hostname ?? null,
     tag,
@@ -463,16 +552,30 @@ export function parseJson(
   lineNo = 0
 ): ParsedLogRecord | null {
   try {
-    const parsed = JSON.parse(line);
+    const parsed = JSON.parse(line) as Record<string, unknown>;
     const flattened = flattenJsonObject(parsed);
     if (!flattened) {
       return null;
     }
 
+    const promoted = promoteJsonLineFields(parsed, flattened);
+
+    const extras: Record<string, CellValue> = { ...flattened };
+    for (const key of [
+      ...TIMESTAMP_JSON_KEYS,
+      ...LEVEL_JSON_KEYS,
+      ...MESSAGE_JSON_KEYS,
+    ]) {
+      delete extras[sanitizeJsonKey(key)];
+    }
+
     return {
       line_no: lineNo,
-      raw_line: line,
-      ...flattened,
+      raw: line,
+      timestamp: promoted.timestamp,
+      level: promoted.level,
+      message: promoted.message,
+      ...extras,
     };
   } catch {
     return null;
@@ -488,15 +591,14 @@ function parseJournaldRecord(
 
   return {
     line_no: lineNo,
-    raw_line: rawLine,
-    __REALTIME_TIMESTAMP: realtime,
+    raw: rawLine,
     timestamp: parseEpochMicros(realtime),
-    _HOSTNAME: toText(record._HOSTNAME),
-    _SYSTEMD_UNIT: toText(record._SYSTEMD_UNIT),
-    SYSLOG_IDENTIFIER: toText(record.SYSLOG_IDENTIFIER),
-    _PID: toInteger(record._PID),
-    PRIORITY: toInteger(record.PRIORITY),
-    MESSAGE: toText(record.MESSAGE),
+    priority: toInteger(record.PRIORITY),
+    unit: toText(record._SYSTEMD_UNIT),
+    hostname: toText(record._HOSTNAME),
+    identifier: toText(record.SYSLOG_IDENTIFIER),
+    pid: toInteger(record._PID),
+    message: toText(record.MESSAGE),
   };
 }
 
@@ -562,37 +664,42 @@ export function parseGeneric(
   line: string,
   lineNo = 0
 ): ParsedLogRecord {
+  const parsedTimestamp = parseTimestamp(line);
+
   return {
     line_no: lineNo,
-    raw_line: line,
+    raw: line,
+    timestamp: parsedTimestamp ? formatTimestamp(parsedTimestamp.date) : null,
+    level: getLogLevelFromText(line),
+    message: line,
   };
 }
 
 export const FORMATS: LogFormat[] = [
   {
     name: "nginx_access",
-    displayName: "Nginx Access Log",
+    displayName: "nginx access log",
     schema: ACCESS_COLUMNS,
     test: (line) => ACCESS_LINE_REGEX.test(line),
     parse: parseNginx,
   },
   {
     name: "apache_access",
-    displayName: "Apache Access Log",
-    schema: APACHE_COLUMNS,
+    displayName: "Apache access log",
+    schema: ACCESS_COLUMNS,
     test: (line) => APACHE_VHOST_REGEX.test(line) || ACCESS_LINE_REGEX.test(line),
     parse: parseApache,
   },
   {
     name: "syslog",
-    displayName: "Syslog (RFC 3164)",
+    displayName: "syslog (RFC 3164)",
     schema: SYSLOG_COLUMNS,
     test: (line) => SYSLOG_REGEX.test(line),
     parse: parseSyslog,
   },
   {
     name: "journald",
-    displayName: "systemd Journal",
+    displayName: "journald export",
     schema: JOURNALD_COLUMNS,
     test: (line) => {
       if (JOURNALD_KEY_VALUE_LINE_REGEX.test(line)) {
@@ -613,15 +720,15 @@ export const FORMATS: LogFormat[] = [
   },
   {
     name: "json",
-    displayName: "JSON Lines",
+    displayName: "JSON lines",
     schema: [],
     test: isJsonObjectLine,
     parse: parseJson,
   },
   {
     name: "generic",
-    displayName: "Generic Text",
-    schema: [],
+    displayName: "generic text",
+    schema: GENERIC_COLUMNS,
     test: (line) => line.length > 0,
     parse: parseGeneric,
   },
@@ -631,12 +738,20 @@ export function getFormat(name: string): LogFormat | undefined {
   return FORMATS.find((format) => format.name === name);
 }
 
+const JSON_FIXED_KEYS = new Set([
+  "line_no",
+  "raw",
+  "timestamp",
+  "level",
+  "message",
+]);
+
 export function inferJsonSchema(records: ParsedLogRecord[]): ColumnDef[] {
   const observedTypes = new Map<string, Set<ColumnDef["type"]>>();
 
   for (const record of records) {
     for (const [key, value] of Object.entries(record)) {
-      if (RESERVED_COLUMN_NAMES.has(key)) {
+      if (JSON_FIXED_KEYS.has(key)) {
         continue;
       }
 
@@ -656,7 +771,13 @@ export function inferJsonSchema(records: ParsedLogRecord[]): ColumnDef[] {
     }
   }
 
-  return Array.from(observedTypes.entries())
+  const fixed: ColumnDef[] = [
+    { name: "timestamp", type: "TEXT" },
+    { name: "level", type: "TEXT" },
+    { name: "message", type: "TEXT" },
+  ];
+
+  const dynamic = Array.from(observedTypes.entries())
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([name, types]) => {
       if (types.has("TEXT") || types.size === 0) {
@@ -669,6 +790,8 @@ export function inferJsonSchema(records: ParsedLogRecord[]): ColumnDef[] {
 
       return { name, type: "INTEGER" as const };
     });
+
+  return [...fixed, ...dynamic];
 }
 
 export function getSchemaForFormat(

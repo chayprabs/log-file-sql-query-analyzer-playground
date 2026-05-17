@@ -36,7 +36,7 @@ describe("getSuggestions", () => {
       tableName: "logs",
       schema: [
         { name: "line_no", type: "INTEGER" },
-        { name: "raw_line", type: "TEXT" },
+        { name: "raw", type: "TEXT" },
         { name: "level", type: "TEXT" },
         { name: "message", type: "TEXT" },
       ],
@@ -60,6 +60,6 @@ describe("getQuickSuggestions", () => {
     const quickSuggestions = getQuickSuggestions("nginx_access");
 
     expect(quickSuggestions).toHaveLength(3);
-    expect(quickSuggestions[0].label).toBe("Status code breakdown");
+    expect(quickSuggestions[0].label).toBe("Status breakdown");
   });
 });

@@ -3,16 +3,31 @@
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useLog } from "@/context/LogContext";
+import type { LogFormat } from "@/lib/engine/formats";
+import { FORMATS } from "@/lib/engine/formats";
+
+const SOFT_WARNING_BYTES = 50 * 1024 * 1024;
+const LARGE_CONFIRM_BYTES = 100 * 1024 * 1024;
 
 export default function Home() {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [showLargeBadge, setShowLargeBadge] = useState(false);
+  const [formatOverride, setFormatOverride] = useState<LogFormat["name"] | undefined>(
+    undefined
+  );
   const { db, error, fileName, loadFile, loading, progress, clearError } = useLog();
 
   const handleSelectedFile = async (file: File): Promise<void> => {
     clearError();
-    const loaded = await loadFile(file);
+    setShowLargeBadge(
+      file.size > SOFT_WARNING_BYTES && file.size <= LARGE_CONFIRM_BYTES
+    );
+
+    const options = formatOverride ? { formatOverride } : undefined;
+
+    const loaded = await loadFile(file, options);
     if (loaded) {
       router.push("/query");
     }
@@ -43,7 +58,7 @@ export default function Home() {
   const progressLabel =
     progress && progress.total > 0
       ? `Parsing line ${Math.min(progress.current, progress.total).toLocaleString()} of ${progress.total.toLocaleString()}...`
-      : "Preparing file...";
+      : "Parsing…";
 
   return (
     <main
@@ -82,7 +97,7 @@ export default function Home() {
                 color: "#6d7c75",
               }}
             >
-              Browser-native log analysis
+              Lens — browser-native log analysis
             </p>
             <h1
               style={{
@@ -106,6 +121,21 @@ export default function Home() {
               file, or plain text log. The file stays in the browser and gets
               parsed into an in-memory `logs` table.
             </p>
+            <p
+              style={{
+                margin: 0,
+                maxWidth: "720px",
+                fontSize: "0.95rem",
+                lineHeight: 1.65,
+                color: "#42544c",
+                borderLeft: "3px solid #234b3d",
+                paddingLeft: "14px",
+              }}
+            >
+              Your log files never leave your browser. All parsing and querying
+              happens locally using WebAssembly. Nothing is uploaded to any
+              server.
+            </p>
           </div>
         </section>
 
@@ -127,9 +157,12 @@ export default function Home() {
               <strong>Current file</strong>
               <span style={{ color: "#55665f" }}>
                 {fileName ?? "Unnamed file"}: {db.rowCount.toLocaleString()} rows
-                loaded as {db.format.name}
+                loaded as {db.format.displayName}
+                {db.detectionConfidence > 0
+                  ? ` (${db.detectionConfidence}% confidence)`
+                  : ""}
                 {db.skippedCount > 0
-                  ? `, ${db.skippedCount.toLocaleString()} skipped`
+                  ? `, ${db.skippedCount.toLocaleString()} rows skipped`
                   : ""}
               </span>
             </div>
@@ -162,6 +195,7 @@ export default function Home() {
             border: `2px dashed ${isDragging ? "#234b3d" : "rgba(35, 75, 61, 0.24)"}`,
             borderRadius: "28px",
             padding: "36px 24px",
+            minHeight: "42vh",
             background: isDragging
               ? "rgba(35, 75, 61, 0.08)"
               : "rgba(255, 255, 255, 0.7)",
@@ -171,7 +205,6 @@ export default function Home() {
           <input
             ref={fileInputRef}
             type="file"
-            accept=".log,.txt,.json"
             onChange={handleFileInput}
             style={{ display: "none" }}
           />
@@ -200,6 +233,21 @@ export default function Home() {
               SQL
             </div>
 
+            {showLargeBadge && !loading && (
+              <div
+                style={{
+                  borderRadius: "14px",
+                  padding: "10px 14px",
+                  background: "rgba(255, 193, 7, 0.2)",
+                  color: "#6a5200",
+                  fontWeight: 600,
+                  maxWidth: "520px",
+                }}
+              >
+                Large file — parsing may be slow
+              </div>
+            )}
+
             {loading ? (
               <div style={{ display: "grid", gap: "8px" }}>
                 <strong style={{ fontSize: "1.05rem" }}>{progressLabel}</strong>
@@ -217,6 +265,47 @@ export default function Home() {
                   <span style={{ color: "#55665f" }}>
                     or use the file picker if you&apos;re on mobile
                   </span>
+                </div>
+
+                <div
+                  style={{
+                    display: "flex",
+                    flexWrap: "wrap",
+                    gap: "10px",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <label htmlFor="format-override" style={{ color: "#55665f" }}>
+                    Format override
+                  </label>
+                  <select
+                    id="format-override"
+                    value={formatOverride ?? ""}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      setFormatOverride(
+                        value === "" ? undefined : (value as LogFormat["name"])
+                      );
+                    }}
+                    style={{
+                      borderRadius: "12px",
+                      border: "1px solid rgba(29, 42, 38, 0.2)",
+                      padding: "8px 12px",
+                      background: "#fff",
+                    }}
+                  >
+                    <option value="">Auto-detect</option>
+                    {FORMATS.filter((format) => format.name !== "generic").map(
+                      (format) => (
+                        <option key={format.name} value={format.name}>
+                          {format.displayName}
+                        </option>
+                      )
+                    )}
+                    <option value="generic">generic text</option>
+                  </select>
                 </div>
 
                 <button

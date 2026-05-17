@@ -23,16 +23,6 @@ function hasColumn(schema: ColumnDef[], columnName: string): boolean {
   return schema.some((column) => column.name === columnName);
 }
 
-function pickColumn(schema: ColumnDef[], candidates: string[]): string | null {
-  for (const candidate of candidates) {
-    if (hasColumn(schema, candidate)) {
-      return candidate;
-    }
-  }
-
-  return null;
-}
-
 function resolveInput(input: SuggestionInput): {
   formatName: LogFormat["name"] | string;
   schema: ColumnDef[];
@@ -69,195 +59,151 @@ function resolveInput(input: SuggestionInput): {
   };
 }
 
-function buildAccessSuggestions(
-  schema: ColumnDef[],
-  tableName: string
-): QuerySuggestion[] {
-  const targetColumn = hasColumn(schema, "request_target")
-    ? "request_target"
-    : "request";
-  const timestampColumn = hasColumn(schema, "timestamp") ? "timestamp" : "time_local";
-  const suggestions: QuerySuggestion[] = [
+function buildAccessSuggestions(tableName: string): QuerySuggestion[] {
+  return [
     {
-      label: "Status code breakdown",
+      label: "Status breakdown",
       sql: `SELECT status, COUNT(*) AS count FROM ${tableName} GROUP BY status ORDER BY count DESC`,
       description: "Count responses by HTTP status code.",
     },
     {
-      label: "Top 20 IPs",
-      sql: `SELECT remote_addr, COUNT(*) AS hits FROM ${tableName} GROUP BY remote_addr ORDER BY hits DESC LIMIT 20`,
+      label: "Top client IPs",
+      sql: `SELECT remote_addr, COUNT(*) AS hits FROM ${tableName} GROUP BY remote_addr ORDER BY hits DESC LIMIT 10`,
       description: "Find the busiest client addresses.",
     },
     {
-      label: "Top 20 requested URLs",
-      sql: `SELECT COALESCE(${targetColumn}, request) AS url, COUNT(*) AS hits FROM ${tableName} GROUP BY COALESCE(${targetColumn}, request) ORDER BY hits DESC LIMIT 20`,
-      description: "Show the most frequently requested targets.",
+      label: "Server errors",
+      sql: `SELECT * FROM ${tableName} WHERE status >= 500`,
+      description: "Inspect HTTP 5xx responses.",
     },
     {
-      label: "4xx errors only",
-      sql: `SELECT line_no, remote_addr, request, status FROM ${tableName} WHERE status >= 400 AND status < 500 ORDER BY line_no DESC LIMIT 100`,
-      description: "Inspect client-side HTTP failures.",
-    },
-    {
-      label: "5xx errors only",
-      sql: `SELECT line_no, remote_addr, request, status FROM ${tableName} WHERE status >= 500 ORDER BY line_no DESC LIMIT 100`,
-      description: "Inspect server-side HTTP failures.",
-    },
-    {
-      label: "Requests per hour",
-      sql: `SELECT strftime('%H', ${timestampColumn}) AS hour, COUNT(*) AS requests FROM ${tableName} WHERE ${timestampColumn} IS NOT NULL GROUP BY hour ORDER BY hour`,
-      description: "Bucket requests by hour of day.",
+      label: "Methods",
+      sql: `SELECT method, COUNT(*) FROM ${tableName} GROUP BY method`,
+      description: "Aggregate requests by HTTP method.",
     },
     {
       label: "Largest responses",
-      sql: `SELECT line_no, remote_addr, request, body_bytes_sent FROM ${tableName} WHERE body_bytes_sent IS NOT NULL ORDER BY body_bytes_sent DESC LIMIT 20`,
-      description: "Find the biggest responses by bytes sent.",
-    },
-    {
-      label: "Most common user agents",
-      sql: `SELECT http_user_agent, COUNT(*) AS hits FROM ${tableName} WHERE http_user_agent IS NOT NULL GROUP BY http_user_agent ORDER BY hits DESC LIMIT 10`,
-      description: "Surface the most common user agents.",
+      sql: `SELECT line_no, remote_addr, path, body_bytes_sent FROM ${tableName} WHERE body_bytes_sent IS NOT NULL ORDER BY body_bytes_sent DESC LIMIT 20`,
+      description: "Find the largest responses by bytes sent.",
     },
   ];
-
-  if (hasColumn(schema, "vhost")) {
-    suggestions.push({
-      label: "Top virtual hosts",
-      sql: `SELECT vhost, COUNT(*) AS hits FROM ${tableName} WHERE vhost IS NOT NULL GROUP BY vhost ORDER BY hits DESC LIMIT 20`,
-      description: "Break down Apache traffic by virtual host.",
-    });
-  }
-
-  return suggestions;
 }
 
-function buildSyslogSuggestions(
-  schema: ColumnDef[],
-  tableName: string
-): QuerySuggestion[] {
-  const timestampColumn = pickColumn(schema, ["timestamp", "timestamp_raw"]) ?? "timestamp";
-
+function buildSyslogSuggestions(tableName: string): QuerySuggestion[] {
   return [
     {
-      label: "Messages by hostname",
-      sql: `SELECT hostname, COUNT(*) AS count FROM ${tableName} GROUP BY hostname ORDER BY count DESC`,
+      label: "By hostname",
+      sql: `SELECT hostname, COUNT(*) FROM ${tableName} GROUP BY hostname ORDER BY 2 DESC`,
       description: "Group syslog entries by host.",
     },
     {
-      label: "Error messages only",
-      sql: `SELECT ${timestampColumn}, hostname, tag, message FROM ${tableName} WHERE lower(message) LIKE '%error%' ORDER BY line_no DESC LIMIT 100`,
-      description: "Filter messages that mention errors.",
+      label: "High severity",
+      sql: `SELECT * FROM ${tableName} WHERE severity <= 3`,
+      description: "Show emergency through error severities.",
     },
     {
-      label: "Messages by hour",
-      sql: `SELECT strftime('%H', timestamp) AS hour, COUNT(*) AS count FROM ${tableName} WHERE timestamp IS NOT NULL GROUP BY hour ORDER BY hour`,
-      description: "Bucket syslog entries by hour.",
-    },
-    {
-      label: "Top tags",
-      sql: `SELECT tag, COUNT(*) AS count FROM ${tableName} WHERE tag IS NOT NULL GROUP BY tag ORDER BY count DESC LIMIT 20`,
+      label: "By tag",
+      sql: `SELECT tag, COUNT(*) FROM ${tableName} GROUP BY tag ORDER BY 2 DESC`,
       description: "Find the busiest emitting programs.",
     },
     {
-      label: "Priority breakdown",
-      sql: `SELECT priority, COUNT(*) AS count FROM ${tableName} GROUP BY priority ORDER BY priority`,
-      description: "Break down entries by syslog priority.",
+      label: "Recent entries",
+      sql: `SELECT * FROM ${tableName} ORDER BY line_no DESC LIMIT 50`,
+      description: "Inspect the latest records.",
     },
     {
-      label: "Recent messages",
-      sql: `SELECT line_no, ${timestampColumn}, hostname, tag, message FROM ${tableName} ORDER BY line_no DESC LIMIT 100`,
-      description: "Inspect the latest parsed syslog records.",
+      label: "Priority counts",
+      sql: `SELECT priority, COUNT(*) FROM ${tableName} GROUP BY priority ORDER BY priority`,
+      description: "Break down entries by syslog priority.",
     },
   ];
 }
 
-function buildJournaldSuggestions(
-  tableName: string
-): QuerySuggestion[] {
+function buildJournaldSuggestions(tableName: string): QuerySuggestion[] {
   return [
     {
-      label: "Messages by unit",
-      sql: `SELECT _SYSTEMD_UNIT, COUNT(*) AS count FROM ${tableName} WHERE _SYSTEMD_UNIT IS NOT NULL GROUP BY _SYSTEMD_UNIT ORDER BY count DESC`,
+      label: "By unit",
+      sql: `SELECT unit, COUNT(*) FROM ${tableName} GROUP BY unit ORDER BY 2 DESC`,
       description: "Show which systemd units are most active.",
     },
     {
-      label: "Messages by priority",
-      sql: `SELECT PRIORITY, COUNT(*) AS count FROM ${tableName} GROUP BY PRIORITY ORDER BY PRIORITY`,
-      description: "Break down journald entries by priority.",
-    },
-    {
-      label: "Messages by identifier",
-      sql: `SELECT SYSLOG_IDENTIFIER, COUNT(*) AS count FROM ${tableName} WHERE SYSLOG_IDENTIFIER IS NOT NULL GROUP BY SYSLOG_IDENTIFIER ORDER BY count DESC LIMIT 20`,
-      description: "Find the busiest journald identifiers.",
-    },
-    {
-      label: "Errors only",
-      sql: `SELECT line_no, timestamp, _SYSTEMD_UNIT, MESSAGE FROM ${tableName} WHERE PRIORITY IS NOT NULL AND PRIORITY <= 3 ORDER BY line_no DESC LIMIT 100`,
+      label: "High priority",
+      sql: `SELECT * FROM ${tableName} WHERE priority <= 3 ORDER BY timestamp DESC LIMIT 50`,
       description: "Inspect high-severity journald entries.",
     },
     {
-      label: "Messages by hour",
-      sql: `SELECT strftime('%H', timestamp) AS hour, COUNT(*) AS count FROM ${tableName} WHERE timestamp IS NOT NULL GROUP BY hour ORDER BY hour`,
-      description: "Bucket journald entries by hour.",
+      label: "By identifier",
+      sql: `SELECT identifier, COUNT(*) FROM ${tableName} GROUP BY identifier ORDER BY 2 DESC LIMIT 20`,
+      description: "Find the busiest journald identifiers.",
     },
     {
       label: "Recent messages",
-      sql: `SELECT line_no, timestamp, _HOSTNAME, SYSLOG_IDENTIFIER, MESSAGE FROM ${tableName} ORDER BY line_no DESC LIMIT 100`,
+      sql: `SELECT * FROM ${tableName} ORDER BY timestamp DESC LIMIT 50`,
       description: "Inspect the latest journald records.",
+    },
+    {
+      label: "By hostname",
+      sql: `SELECT hostname, COUNT(*) FROM ${tableName} GROUP BY hostname ORDER BY 2 DESC`,
+      description: "Group journald entries by host.",
     },
   ];
 }
 
-function buildJsonSuggestions(
-  schema: ColumnDef[],
-  tableName: string
-): QuerySuggestion[] {
-  const levelColumn = pickColumn(schema, ["level", "severity", "log_level"]);
-  const messageColumn = pickColumn(schema, ["message", "msg"]);
+function buildJsonSuggestions(schema: ColumnDef[], tableName: string): QuerySuggestion[] {
+  const effectiveSchema: ColumnDef[] =
+    schema.length > 0
+      ? schema
+      : [
+          { name: "line_no", type: "INTEGER" },
+          { name: "raw", type: "TEXT" },
+          { name: "timestamp", type: "TEXT" },
+          { name: "level", type: "TEXT" },
+          { name: "message", type: "TEXT" },
+        ];
+
+  const hasLevel = hasColumn(effectiveSchema, "level");
+  const hasTimestamp = hasColumn(effectiveSchema, "timestamp");
 
   const suggestions: QuerySuggestion[] = [
     {
-      label: "Row count",
-      sql: `SELECT COUNT(*) AS total FROM ${tableName}`,
-      description: "Count all parsed JSON rows.",
-    },
-    {
       label: "First 100 rows",
-      sql: `SELECT * FROM ${tableName} ORDER BY line_no ASC LIMIT 100`,
-      description: "Inspect the earliest parsed JSON rows.",
+      sql: `SELECT * FROM ${tableName} LIMIT 100`,
+      description: "Inspect the first parsed JSON rows.",
     },
     {
-      label: "Last 100 rows",
-      sql: `SELECT * FROM ${tableName} ORDER BY line_no DESC LIMIT 100`,
-      description: "Inspect the latest parsed JSON rows.",
-    },
-    {
-      label: "All distinct keys",
-      sql: `SELECT name, type FROM pragma_table_info('${tableName}') ORDER BY cid`,
-      description: "List the inferred schema for this JSON file.",
-    },
-    {
-      label: "Recent raw JSON lines",
-      sql: `SELECT line_no, raw_line FROM ${tableName} ORDER BY line_no DESC LIMIT 100`,
-      description: "Inspect the original JSON lines as loaded.",
+      label: "Errors",
+      sql: `SELECT * FROM ${tableName} WHERE level = 'error' ORDER BY timestamp DESC LIMIT 100`,
+      description: "Filter rows at the error level.",
     },
   ];
 
-  if (levelColumn) {
-    suggestions.push({
-      label: "Group by log level",
-      sql: `SELECT ${levelColumn}, COUNT(*) AS count FROM ${tableName} GROUP BY ${levelColumn} ORDER BY count DESC`,
-      description: "Aggregate JSON rows by level or severity.",
+  if (hasLevel) {
+    suggestions.unshift({
+      label: "By level",
+      sql: `SELECT level, COUNT(*) FROM ${tableName} GROUP BY level ORDER BY 2 DESC`,
+      description: "Aggregate JSON rows by level.",
     });
   }
 
-  if (messageColumn) {
+  if (hasTimestamp && hasLevel) {
     suggestions.push({
-      label: "Messages containing error",
-      sql: `SELECT line_no, ${messageColumn} FROM ${tableName} WHERE lower(${messageColumn}) LIKE '%error%' ORDER BY line_no DESC LIMIT 100`,
-      description: "Search JSON message fields for errors.",
+      label: "Recent by timestamp",
+      sql: `SELECT * FROM ${tableName} ORDER BY timestamp DESC LIMIT 100`,
+      description: "Inspect the latest JSON rows.",
     });
   }
+
+  suggestions.push({
+    label: "Row count",
+    sql: `SELECT COUNT(*) AS total FROM ${tableName}`,
+    description: "Count all parsed JSON rows.",
+  });
+
+  suggestions.push({
+    label: "Schema columns",
+    sql: `SELECT name, type FROM pragma_table_info('${tableName}') ORDER BY cid`,
+    description: "List the inferred schema for this JSON file.",
+  });
 
   return suggestions;
 }
@@ -265,29 +211,29 @@ function buildJsonSuggestions(
 function buildGenericSuggestions(tableName: string): QuerySuggestion[] {
   return [
     {
+      label: "First rows",
+      sql: `SELECT * FROM ${tableName} LIMIT 100`,
+      description: "Inspect the first parsed lines.",
+    },
+    {
+      label: "Search message",
+      sql: `SELECT * FROM ${tableName} WHERE message LIKE '%error%'`,
+      description: "Find lines whose message contains error.",
+    },
+    {
       label: "Line count",
       sql: `SELECT COUNT(*) AS total FROM ${tableName}`,
       description: "Count all loaded lines.",
     },
     {
-      label: "Search for error",
-      sql: `SELECT line_no, raw_line FROM ${tableName} WHERE raw_line LIKE '%error%' ORDER BY line_no ASC LIMIT 100`,
-      description: "Find lines containing the word error.",
+      label: "Recent lines",
+      sql: `SELECT * FROM ${tableName} ORDER BY line_no DESC LIMIT 100`,
+      description: "Inspect the latest lines.",
     },
     {
-      label: "First 100 lines",
-      sql: `SELECT line_no, raw_line FROM ${tableName} ORDER BY line_no ASC LIMIT 100`,
-      description: "Inspect the start of the file.",
-    },
-    {
-      label: "Last 100 lines",
-      sql: `SELECT line_no, raw_line FROM ${tableName} ORDER BY line_no DESC LIMIT 100`,
-      description: "Inspect the end of the file.",
-    },
-    {
-      label: "Longest lines",
-      sql: `SELECT line_no, length(raw_line) AS line_length, raw_line FROM ${tableName} ORDER BY line_length DESC LIMIT 20`,
-      description: "Surface unusually long lines that may need inspection.",
+      label: "Distinct levels",
+      sql: `SELECT DISTINCT level FROM ${tableName} WHERE level IS NOT NULL`,
+      description: "List inferred severity levels.",
     },
   ];
 }
@@ -298,9 +244,9 @@ export function getSuggestions(input: SuggestionInput): QuerySuggestion[] {
   switch (formatName) {
     case "nginx_access":
     case "apache_access":
-      return buildAccessSuggestions(schema, tableName);
+      return buildAccessSuggestions(tableName);
     case "syslog":
-      return buildSyslogSuggestions(schema, tableName);
+      return buildSyslogSuggestions(tableName);
     case "journald":
       return buildJournaldSuggestions(tableName);
     case "json":

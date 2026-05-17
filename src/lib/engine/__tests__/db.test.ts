@@ -161,7 +161,7 @@ describe("loadLogFile", () => {
 
     expect(result.error).toBeUndefined();
     expect(result.columns).toContain("line_no");
-    expect(result.columns).toContain("raw_line");
+    expect(result.columns).toContain("raw");
     expect(result.columns).toContain("level");
     expect(result.rows).toHaveLength(2);
   });
@@ -177,7 +177,8 @@ describe("loadLogFile", () => {
     expect(database.query("SELECT * FROM nonexistent_table")).toEqual({
       columns: [],
       rows: [],
-      error: "no such table: nonexistent_table",
+      error:
+        "The query referenced a table that wasn't found. Use the table name shown in the schema panel.",
     });
   });
 

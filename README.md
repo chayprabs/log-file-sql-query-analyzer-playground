@@ -10,7 +10,7 @@
 | **npm package** | `lnav-web` |
 | **Repository** | `log-file-sql-query-analyzer-playground` |
 | **Suite** | Authos ([authos.app](https://authos.app)) |
-| **License** | MIT |
+| **License** | [MIT](./LICENSE) |
 
 ---
 
@@ -41,6 +41,7 @@ Engineers investigating incidents need to **filter and aggregate** logs fast —
 - **In-memory SQLite** via sql.js: **`CREATE TABLE logs`** and **batched inserts** (5,000-row transaction chunks) for large files.
 - **Query UI:** schema panel, **format-specific SQL suggestions** (click to run), **Ctrl/Cmd+Enter** to execute, **paginated results** (100 rows per page), **CSV export** (`query-results.csv`), **recent query history** (last 10 queries, **SQL text only** in `localStorage`).
 - **Safety:** result cells rendered as **plain text** (no HTML injection from log payloads).
+- **Legal pages (static routes):** `/privacy`, `/terms`, `/credits` — plus footer links and MIT **LICENSE** at repo root.
 
 ---
 
@@ -68,12 +69,12 @@ cd log-file-sql-query-analyzer-playground
 npm install
 ```
 
-**sql.js WASM files (required):** ensure both files exist under `public/` before `npm run dev` or `npm run build`:
+`npm install` runs **`postinstall`**, which copies **both** WASM builds into `public/`:
 
 - `public/sql-wasm.wasm`
 - `public/sql-wasm-browser.wasm`
 
-If they are missing after install, copy them from the installed package:
+If they are ever missing (e.g. offline mirror), copy manually:
 
 ```bash
 cp node_modules/sql.js/dist/sql-wasm.wasm public/
@@ -109,6 +110,9 @@ npm run serve:out
 | `npm run lint` | ESLint |
 | `npm test` | Vitest unit tests (`src/lib/engine/__tests__/`) |
 | `npm run test:watch` | Vitest watch mode |
+| `npm run test:e2e` | Playwright end-to-end tests (builds then serves `out/`) |
+
+`postinstall` copies sql.js WASM files into `public/` (see above).
 
 ---
 
@@ -241,7 +245,7 @@ scripts/            # serve-static.cjs — WASM-aware static server
 ## Maintainer & license
 
 **Owner:** Chaitanya Prabuddha — **[@chayprabs](https://github.com/chayprabs)**  
-**License:** MIT (see repository `LICENSE` when present, or SPDX identifier `MIT` in `package.json`).
+**License:** MIT — see [LICENSE](./LICENSE).
 
 ---
 

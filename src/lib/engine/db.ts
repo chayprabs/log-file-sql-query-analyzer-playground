@@ -1,8 +1,9 @@
 import initSqlJs, { Database as SqlJsDatabase, SqlJsStatic } from "sql.js";
-import { detectFormat } from "./detector";
+import { detectFormat, DetectionResult } from "./detector";
 import {
   CellValue,
   ColumnDef,
+  getFormat,
   getSchemaForFormat,
   inferJsonSchema,
   isJournaldRecordLine,
@@ -26,6 +27,8 @@ export interface LoadLogFileOptions {
   confirmLargeFile?: (warning: string) => boolean | Promise<boolean>;
   largeFileWarningBytes?: number;
   onProgress?: (progress: LoadProgress) => void;
+  /** When set, skip auto-detection and parse with this format. */
+  formatOverride?: LogFormat["name"];
 }
 
 export interface LogDatabase {
@@ -35,6 +38,8 @@ export interface LogDatabase {
   rowCount: number;
   skippedCount: number;
   tableName: typeof LOGS_TABLE_NAME;
+  /** 0–100 percentage from the format detector (0 when overridden or unknown). */
+  detectionConfidence: number;
   query: (sql: string) => QueryResult;
   close: () => void;
 }
@@ -44,14 +49,15 @@ interface RawRecord {
   lineNo: number;
 }
 
-const DEFAULT_LARGE_FILE_WARNING_BYTES = 50 * 1024 * 1024;
 const BATCH_SIZE = 5000;
+const BINARY_SNIFF_BYTES = 8192;
+const MAX_FILE_BYTES = 500 * 1024 * 1024;
 
 export const LOGS_TABLE_NAME = "logs";
 
 export const BASE_SCHEMA: ColumnDef[] = [
   { name: "line_no", type: "INTEGER" },
-  { name: "raw_line", type: "TEXT" },
+  { name: "raw", type: "TEXT" },
 ];
 
 let sqlModulePromise: Promise<SqlJsStatic> | null = null;
@@ -63,7 +69,7 @@ function escapeIdentifier(identifier: string): string {
 
 function getWasmPath(file: string): string {
   if (typeof window === "undefined") {
-    return file;
+    return `/${file}`;
   }
 
   return new URL(`/${file}`, window.location.origin).toString();
@@ -79,12 +85,59 @@ async function getSqlModule(): Promise<SqlJsStatic> {
   return sqlModulePromise;
 }
 
-function normalizeContent(content: string): string {
-  return content.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+function rewriteQueryError(message: string): string {
+  const missingTable = message.match(/no such table:\s*(.+)/i);
+  if (missingTable) {
+    return "The query referenced a table that wasn't found. Use the table name shown in the schema panel.";
+  }
+
+  const missingColumn = message.match(/no such column:\s*(.+)/i);
+  if (missingColumn) {
+    const name = missingColumn[1].trim();
+    return `Column "${name}" doesn't exist. Check the schema panel for available columns.`;
+  }
+
+  return message;
 }
 
-function isProbablyBinary(content: string): boolean {
-  return /[\x00-\x08\x0E-\x1F]/.test(content.slice(0, 1024));
+async function readFileAsText(file: File): Promise<string> {
+  const buffer = await file.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+
+  if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
+    return new TextDecoder("utf-8").decode(bytes.subarray(3));
+  }
+
+  if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) {
+    return new TextDecoder("utf-16le").decode(bytes.subarray(2));
+  }
+
+  if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) {
+    const view = new DataView(buffer);
+    let result = "";
+    for (let index = 2; index < bytes.length - 1; index += 2) {
+      result += String.fromCharCode(view.getUint16(index, false));
+    }
+
+    return result;
+  }
+
+  return new TextDecoder("utf-8").decode(bytes);
+}
+
+function normalizeContent(content: string): string {
+  return content.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+}
+
+function containsNullByteInPrefix(text: string, maxBytes: number): boolean {
+  const limit = Math.min(text.length, maxBytes);
+  for (let index = 0; index < limit; index += 1) {
+    if (text.charCodeAt(index) === 0) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function splitLineRecords(content: string): RawRecord[] {
@@ -129,6 +182,7 @@ function splitJournaldRecords(content: string): RawRecord[] {
         records.push({ text: currentLines.join("\n"), lineNo: startLineNo });
         currentLines = [];
       }
+
       continue;
     }
 
@@ -201,30 +255,42 @@ function recordToRow(schema: ColumnDef[], record: ParsedLogRecord): (string | nu
   return schema.map((column) => coerceValue(record[column.name]));
 }
 
-function flushBatch(
+function insertRowsInBatches(
   db: SqlJsDatabase,
   schema: ColumnDef[],
-  batch: (string | number | null)[][]
+  rows: (string | number | null)[][]
 ): void {
-  if (!batch.length) {
+  if (!rows.length) {
     return;
   }
 
-  const columns = schema.map((column) => escapeIdentifier(column.name)).join(", ");
-  const rowPlaceholders = `(${schema.map(() => "?").join(", ")})`;
-  const placeholders = batch.map(() => rowPlaceholders).join(", ");
-  const params = batch.flat();
+  const maxVariables = 900;
+  const columnsPerRow = schema.length;
+  const safeRowsPerStatement = Math.max(1, Math.floor(maxVariables / columnsPerRow));
 
-  db.run("BEGIN TRANSACTION");
-  try {
-    db.run(
-      `INSERT INTO ${escapeIdentifier(LOGS_TABLE_NAME)} (${columns}) VALUES ${placeholders}`,
-      params
-    );
-    db.run("COMMIT");
-  } catch (error) {
-    db.run("ROLLBACK");
-    throw error;
+  const columnSql = schema.map((column) => escapeIdentifier(column.name)).join(", ");
+  const rowPlaceholders = `(${schema.map(() => "?").join(", ")})`;
+
+  for (let offset = 0; offset < rows.length; offset += BATCH_SIZE) {
+    const slice = rows.slice(offset, offset + BATCH_SIZE);
+
+    for (let inner = 0; inner < slice.length; inner += safeRowsPerStatement) {
+      const chunk = slice.slice(inner, inner + safeRowsPerStatement);
+      const placeholders = chunk.map(() => rowPlaceholders).join(", ");
+      const params = chunk.flat();
+
+      db.run("BEGIN");
+      try {
+        db.run(
+          `INSERT INTO ${escapeIdentifier(LOGS_TABLE_NAME)} (${columnSql}) VALUES ${placeholders}`,
+          params
+        );
+        db.run("COMMIT");
+      } catch (error) {
+        db.run("ROLLBACK");
+        throw error;
+      }
+    }
   }
 }
 
@@ -270,11 +336,6 @@ function normalizeQueryRows(
   );
 }
 
-function buildLargeFileWarning(fileName: string, size: number): string {
-  const sizeInMb = (size / (1024 * 1024)).toFixed(1);
-  return `${fileName} is ${sizeInMb} MB. Large log files may take noticeable time to parse. Continue?`;
-}
-
 function reportProgress(
   callback: LoadLogFileOptions["onProgress"],
   progress: LoadProgress
@@ -284,16 +345,36 @@ function reportProgress(
   }
 }
 
+function resolveDetection(
+  meaningfulLines: string[],
+  options: LoadLogFileOptions
+): { format: LogFormat; detection: DetectionResult | null } {
+  if (options.formatOverride) {
+    const forced = getFormat(options.formatOverride);
+    if (forced) {
+      return { format: forced, detection: null };
+    }
+  }
+
+  const detection = detectFormat(meaningfulLines);
+  return { format: detection.format, detection };
+}
+
 export async function loadLogFile(
   file: File,
   options: LoadLogFileOptions = {}
 ): Promise<LogDatabase> {
-  const largeFileWarningBytes =
-    options.largeFileWarningBytes ?? DEFAULT_LARGE_FILE_WARNING_BYTES;
+  if (file.size > MAX_FILE_BYTES) {
+    throw new Error("File is too large. Maximum is 500 MB.");
+  }
 
-  if (file.size > largeFileWarningBytes && options.confirmLargeFile) {
+  if (
+    options.confirmLargeFile &&
+    options.largeFileWarningBytes !== undefined &&
+    file.size > options.largeFileWarningBytes
+  ) {
     const shouldContinue = await options.confirmLargeFile(
-      buildLargeFileWarning(file.name, file.size)
+      "This file is large and may take noticeable time to parse. Continue?"
     );
 
     if (!shouldContinue) {
@@ -301,9 +382,12 @@ export async function loadLogFile(
     }
   }
 
-  const rawContent = normalizeContent(await file.text());
-  if (isProbablyBinary(rawContent)) {
-    throw new Error("File appears to be binary, not a text log");
+  const rawContent = normalizeContent(await readFileAsText(file));
+
+  if (containsNullByteInPrefix(rawContent, BINARY_SNIFF_BYTES)) {
+    throw new Error(
+      "This does not appear to be a text file. Only text-based log files are supported."
+    );
   }
 
   const rawLines = splitLineRecords(rawContent);
@@ -312,11 +396,10 @@ export async function loadLogFile(
     .filter((line) => line.trim().length > 0);
 
   if (meaningfulLines.length === 0) {
-    throw new Error("File is empty");
+    throw new Error("No log lines could be parsed from this file.");
   }
 
-  const detection = detectFormat(meaningfulLines);
-  const format = detection.format;
+  const { format, detection } = resolveDetection(meaningfulLines, options);
   const records = getRecordsForFormat(format, rawContent);
 
   const parsedJsonRecords =
@@ -337,8 +420,7 @@ export async function loadLogFile(
   currentDatabase = db;
   createLogsTable(db, schema);
 
-  let batch: (string | number | null)[][] = [];
-  let rowCount = 0;
+  const rowsToInsert: (string | number | null)[][] = [];
   let skippedCount = 0;
 
   for (let index = 0; index < records.length; index += 1) {
@@ -356,13 +438,7 @@ export async function loadLogFile(
       continue;
     }
 
-    batch.push(recordToRow(schema, parsed));
-
-    if (batch.length >= BATCH_SIZE) {
-      flushBatch(db, schema, batch);
-      rowCount += batch.length;
-      batch = [];
-    }
+    rowsToInsert.push(recordToRow(schema, parsed));
 
     if ((index + 1) % 200 === 0 || index === records.length - 1) {
       reportProgress(options.onProgress, {
@@ -372,14 +448,19 @@ export async function loadLogFile(
     }
   }
 
-  if (batch.length) {
-    flushBatch(db, schema, batch);
-    rowCount += batch.length;
+  insertRowsInBatches(db, schema, rowsToInsert);
+  const rowCount = rowsToInsert.length;
+
+  if (rowCount === 0) {
+    db.close();
+    throw new Error("No log lines could be parsed from this file.");
   }
 
   createIndexes(db, schema);
 
   let closed = false;
+  const detectionConfidence =
+    detection && !options.formatOverride ? Math.round(detection.confidence * 100) : 0;
 
   return {
     db,
@@ -388,6 +469,7 @@ export async function loadLogFile(
     rowCount,
     skippedCount,
     tableName: LOGS_TABLE_NAME,
+    detectionConfidence,
     query: (sql: string): QueryResult => {
       if (closed) {
         return {
@@ -414,7 +496,9 @@ export async function loadLogFile(
         return {
           columns: [],
           rows: [],
-          error: error instanceof Error ? error.message : "Query failed",
+          error: rewriteQueryError(
+            error instanceof Error ? error.message : "Query failed"
+          ),
         };
       }
     },

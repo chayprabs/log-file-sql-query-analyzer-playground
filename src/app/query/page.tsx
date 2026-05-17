@@ -2,9 +2,11 @@
 
 import {
   startTransition,
+  useCallback,
   useEffect,
   useEffectEvent,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { useRouter } from "next/navigation";
@@ -27,27 +29,29 @@ function readQueryHistory(): string[] {
   }
 
   try {
-    const parsed = JSON.parse(stored) as string[];
-    return Array.isArray(parsed) ? parsed.slice(0, 10) : [];
+    const parsed = JSON.parse(stored) as unknown;
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed
+      .filter((entry): entry is string => typeof entry === "string")
+      .slice(0, 10);
   } catch {
     return [];
   }
 }
 
-function formatQueryError(rawError: string, availableColumns: string[]): string {
-  const missingTable = rawError.match(/no such table: ([^\s]+)/i);
-  if (missingTable) {
-    return `Table "${missingTable[1]}" not found. Use table name: logs.`;
-  }
+function stripLeadingComments(sql: string): string {
+  return sql
+    .trim()
+    .replace(/^(\s*--[^\n]*\n)+/g, "")
+    .trim();
+}
 
-  const missingColumn = rawError.match(/no such column: ([^\s]+)/i);
-  if (missingColumn) {
-    return `Column "${missingColumn[1]}" not found. Available columns: ${availableColumns.join(
-      ", "
-    )}`;
-  }
-
-  return rawError;
+function isPotentiallyMutatingSql(sql: string): boolean {
+  const trimmed = stripLeadingComments(sql);
+  return trimmed.length > 0 && !/^(select|with|values|explain)\b/i.test(trimmed);
 }
 
 function buildCsv(result: QueryResult): string {
@@ -87,14 +91,15 @@ function LoadedQueryWorkspace({
   const [sql, setSql] = useState(DEFAULT_QUERY);
   const [result, setResult] = useState<QueryResult | null>(null);
   const [queryError, setQueryError] = useState<string | null>(null);
+  const [resultInfo, setResultInfo] = useState<string | null>(null);
   const [page, setPage] = useState(0);
   const [queryHistory, setQueryHistory] = useState<string[]>(readQueryHistory);
   const [showSchema, setShowSchema] = useState(true);
+  const lastExecutedSql = useRef("");
 
   const suggestions = useMemo(() => (db ? getSuggestions(db) : []), [db]);
-  const availableColumns = db?.schema.map((column) => column.name) ?? [];
 
-  const saveQueryToHistory = (statement: string): void => {
+  const saveQueryToHistory = useCallback((statement: string): void => {
     const trimmed = statement.trim();
     if (!trimmed || typeof window === "undefined") {
       return;
@@ -109,30 +114,54 @@ function LoadedQueryWorkspace({
       window.localStorage.setItem(HISTORY_KEY, JSON.stringify(nextHistory));
       return nextHistory;
     });
-  };
+  }, []);
 
-  const executeQuery = (statement: string): void => {
-    const trimmed = statement.trim();
-    if (!trimmed) {
-      return;
-    }
+  const executeQuery = useCallback(
+    (statement: string): void => {
+      const trimmed = statement.trim();
+      setResultInfo(null);
 
-    saveQueryToHistory(trimmed);
-
-    startTransition(() => {
-      const nextResult = runQuery(trimmed);
-      setPage(0);
-
-      if (nextResult.error) {
+      if (!trimmed) {
+        setQueryError("Enter a SQL query.");
         setResult(null);
-        setQueryError(formatQueryError(nextResult.error, availableColumns));
         return;
       }
 
-      setQueryError(null);
-      setResult(nextResult);
-    });
-  };
+      if (
+        typeof window !== "undefined" &&
+        isPotentiallyMutatingSql(trimmed) &&
+        !window.confirm(
+          "Warning: This query modifies the database. Results may be unexpected."
+        )
+      ) {
+        return;
+      }
+
+      saveQueryToHistory(trimmed);
+
+      startTransition(() => {
+        const nextResult = runQuery(trimmed);
+        setPage(0);
+
+        if (nextResult.error) {
+          setResult(null);
+          setQueryError(nextResult.error);
+          return;
+        }
+
+        setQueryError(null);
+        setResult(nextResult);
+        lastExecutedSql.current = trimmed;
+
+        if (nextResult.columns.length === 0) {
+          setResultInfo("Query completed with no result columns.");
+        } else if (nextResult.rows.length === 0) {
+          setResultInfo("No rows returned.");
+        }
+      });
+    },
+    [runQuery, saveQueryToHistory]
+  );
 
   const onWindowKeyDown = useEffectEvent((event: KeyboardEvent) => {
     if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
@@ -157,8 +186,16 @@ function LoadedQueryWorkspace({
     executeQuery(nextSql);
   };
 
+  const clearHistory = (): void => {
+    if (typeof window !== "undefined") {
+      window.localStorage.removeItem(HISTORY_KEY);
+    }
+
+    setQueryHistory([]);
+  };
+
   const handleExport = (): void => {
-    if (!result) {
+    if (!result || result.columns.length === 0 || result.rows.length === 0) {
       return;
     }
 
@@ -172,6 +209,28 @@ function LoadedQueryWorkspace({
     URL.revokeObjectURL(url);
   };
 
+  const confirmLeave = (): boolean => {
+    if (sql.trim() === lastExecutedSql.current.trim()) {
+      return true;
+    }
+
+    if (typeof window === "undefined") {
+      return true;
+    }
+
+    return window.confirm(
+      "You have SQL in the editor that differs from the last run query. Leave this page?"
+    );
+  };
+
+  const goHome = (): void => {
+    if (!confirmLeave()) {
+      return;
+    }
+
+    router.push("/");
+  };
+
   if (!db) {
     return null;
   }
@@ -182,6 +241,12 @@ function LoadedQueryWorkspace({
     result?.rows.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE) ?? [];
   const showingStart = totalRows === 0 ? 0 : page * PAGE_SIZE + 1;
   const showingEnd = totalRows === 0 ? 0 : page * PAGE_SIZE + pagedRows.length;
+
+  const skippedLabel =
+    db.skippedCount > 0 ? ` · ${db.skippedCount.toLocaleString()} rows skipped` : "";
+
+  const confidenceLabel =
+    db.detectionConfidence > 0 ? ` · ${db.detectionConfidence}% confidence` : "";
 
   return (
     <main
@@ -216,20 +281,20 @@ function LoadedQueryWorkspace({
         >
           <div style={{ display: "grid", gap: "6px" }}>
             <strong>
-              {db.rowCount.toLocaleString()} rows loaded from logs ({db.format.name}
-              )
+              {db.format.displayName} · {db.rowCount.toLocaleString()} rows ·{" "}
+              {fileName ?? "Unnamed file"}
+              {skippedLabel}
+              {confidenceLabel}
             </strong>
             <span style={{ color: "#55665f" }}>
-              {fileName ?? "Unnamed file"} | {db.format.displayName}
-              {db.skippedCount > 0
-                ? ` | ${db.skippedCount.toLocaleString()} rows skipped`
-                : ""}
+              Table <code>logs</code> · client-side sql.js
             </span>
           </div>
 
           <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
             <button
-              onClick={() => router.push("/")}
+              type="button"
+              onClick={goHome}
               style={{
                 border: "1px solid rgba(35, 75, 61, 0.2)",
                 borderRadius: "999px",
@@ -241,6 +306,7 @@ function LoadedQueryWorkspace({
               Load another file
             </button>
             <button
+              type="button"
               onClick={() => setShowSchema((current) => !current)}
               style={{
                 border: "none",
@@ -260,7 +326,8 @@ function LoadedQueryWorkspace({
           style={{
             display: "grid",
             gap: "18px",
-            gridTemplateColumns: "minmax(0, 1fr)",
+            gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
+            alignItems: "start",
           }}
         >
           <aside
@@ -270,38 +337,84 @@ function LoadedQueryWorkspace({
               padding: "18px",
               background: "rgba(255, 255, 255, 0.74)",
               display: "grid",
-              gap: "12px",
+              gap: "14px",
               alignContent: "start",
             }}
           >
+            {showSchema && (
+              <div
+                style={{
+                  borderRadius: "16px",
+                  padding: "14px 16px",
+                  background: "#f5f7f4",
+                  display: "grid",
+                  gap: "10px",
+                }}
+              >
+                <strong>Schema</strong>
+                <div style={{ color: "#55665f", fontSize: "0.92rem" }}>
+                  Detected format: {db.format.displayName}
+                </div>
+                <div style={{ color: "#55665f" }}>Table: logs</div>
+                <div
+                  style={{
+                    display: "flex",
+                    gap: "8px",
+                    flexWrap: "wrap",
+                  }}
+                >
+                  {db.schema.map((column) => (
+                    <span
+                      key={column.name}
+                      style={{
+                        borderRadius: "999px",
+                        background: "#fff",
+                        border: "1px solid rgba(29, 42, 38, 0.12)",
+                        padding: "8px 10px",
+                        fontFamily:
+                          "ui-monospace, SFMono-Regular, SFMono-Regular, Consolas, monospace",
+                        fontSize: "0.85rem",
+                      }}
+                    >
+                      {column.name}{" "}
+                      <span style={{ color: "#6d7c75" }}>{column.type}</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div>
               <strong>Suggestions</strong>
-              <p style={{ marginBottom: 0, color: "#55665f" }}>
-                Click a query to load it into the editor and run it immediately.
+              <p style={{ marginBottom: 0, color: "#55665f", fontSize: "0.92rem" }}>
+                Click a chip to fill the editor and run the query immediately.
               </p>
             </div>
 
-            {suggestions.map((suggestion) => (
-              <button
-                key={suggestion.label}
-                onClick={() => handleSuggestionClick(suggestion.sql)}
-                style={{
-                  textAlign: "left",
-                  border: "1px solid rgba(35, 75, 61, 0.12)",
-                  borderRadius: "16px",
-                  padding: "12px 14px",
-                  background: "#fff",
-                  cursor: "pointer",
-                  display: "grid",
-                  gap: "4px",
-                }}
-              >
-                <strong>{suggestion.label}</strong>
-                <span style={{ color: "#55665f", fontSize: "0.92rem" }}>
-                  {suggestion.description}
-                </span>
-              </button>
-            ))}
+            <div style={{ display: "grid", gap: "10px" }}>
+              {suggestions.map((suggestion) => (
+                <button
+                  key={suggestion.label}
+                  type="button"
+                  onClick={() => handleSuggestionClick(suggestion.sql)}
+                  style={{
+                    textAlign: "left",
+                    border: "1px solid rgba(35, 75, 61, 0.12)",
+                    borderRadius: "16px",
+                    padding: "12px 14px",
+                    background: "#fff",
+                    cursor: "pointer",
+                    display: "grid",
+                    gap: "4px",
+                  }}
+                >
+                  <strong>{suggestion.label}</strong>
+                  <span style={{ color: "#55665f", fontSize: "0.92rem" }}>
+                    {suggestion.description}
+                  </span>
+                </button>
+              ))}
+            </div>
           </aside>
 
           <section
@@ -353,11 +466,12 @@ function LoadedQueryWorkspace({
                 }}
               >
                 <span style={{ color: "#55665f" }}>
-                  Press Ctrl+Enter to run the current query.
+                  Press Ctrl+Enter or Cmd+Enter to run the current query.
                 </span>
 
                 <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
                   <button
+                    type="button"
                     onClick={() => executeQuery(sql)}
                     style={{
                       border: "none",
@@ -368,19 +482,36 @@ function LoadedQueryWorkspace({
                       cursor: "pointer",
                     }}
                   >
-                    Run query
+                    Run
                   </button>
                   <button
+                    type="button"
                     onClick={handleExport}
-                    disabled={!result || !!queryError}
+                    disabled={
+                      !result ||
+                      !!queryError ||
+                      !result.columns.length ||
+                      !result.rows.length
+                    }
                     style={{
                       border: "1px solid rgba(29, 42, 38, 0.16)",
                       borderRadius: "999px",
                       background: "#fff",
                       padding: "10px 18px",
                       cursor:
-                        !result || !!queryError ? "not-allowed" : "pointer",
-                      opacity: !result || !!queryError ? 0.5 : 1,
+                        !result ||
+                        !!queryError ||
+                        !result.columns.length ||
+                        !result.rows.length
+                          ? "not-allowed"
+                          : "pointer",
+                      opacity:
+                        !result ||
+                        !!queryError ||
+                        !result.columns.length ||
+                        !result.rows.length
+                          ? 0.5
+                          : 1,
                     }}
                   >
                     Export CSV
@@ -390,7 +521,31 @@ function LoadedQueryWorkspace({
 
               {queryHistory.length > 0 && (
                 <div style={{ display: "grid", gap: "8px" }}>
-                  <strong>Recent queries</strong>
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      gap: "10px",
+                      flexWrap: "wrap",
+                    }}
+                  >
+                    <strong>Recent queries</strong>
+                    <button
+                      type="button"
+                      onClick={clearHistory}
+                      style={{
+                        border: "none",
+                        background: "transparent",
+                        color: "#234b3d",
+                        cursor: "pointer",
+                        textDecoration: "underline",
+                        fontSize: "0.9rem",
+                      }}
+                    >
+                      Clear history
+                    </button>
+                  </div>
                   <div
                     style={{
                       display: "flex",
@@ -400,6 +555,7 @@ function LoadedQueryWorkspace({
                   >
                     {queryHistory.map((entry) => (
                       <button
+                        type="button"
                         key={entry}
                         onClick={() => setSql(entry)}
                         style={{
@@ -412,47 +568,8 @@ function LoadedQueryWorkspace({
                         }}
                         title={entry}
                       >
-                        {entry}
+                        {entry.length > 80 ? `${entry.slice(0, 80)}…` : entry}
                       </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {showSchema && (
-                <div
-                  style={{
-                    borderRadius: "18px",
-                    padding: "14px 16px",
-                    background: "#f5f7f4",
-                    display: "grid",
-                    gap: "10px",
-                  }}
-                >
-                  <strong>Schema</strong>
-                  <div style={{ color: "#55665f" }}>Table: logs</div>
-                  <div
-                    style={{
-                      display: "flex",
-                      gap: "8px",
-                      flexWrap: "wrap",
-                    }}
-                  >
-                    {db.schema.map((column) => (
-                      <span
-                        key={column.name}
-                        style={{
-                          borderRadius: "999px",
-                          background: "#fff",
-                          border: "1px solid rgba(29, 42, 38, 0.12)",
-                          padding: "8px 10px",
-                          fontFamily:
-                            "ui-monospace, SFMono-Regular, SFMono-Regular, Consolas, monospace",
-                          fontSize: "0.85rem",
-                        }}
-                      >
-                        {column.name} <span style={{ color: "#6d7c75" }}>{column.type}</span>
-                      </span>
                     ))}
                   </div>
                 </div>
@@ -483,21 +600,19 @@ function LoadedQueryWorkspace({
             </div>
 
             <div style={{ padding: "16px 18px 20px", overflowX: "auto" }}>
-              {!result && !queryError && (
+              {!result && !queryError && !resultInfo && (
                 <div style={{ color: "#55665f" }}>
                   Run a query to inspect the loaded log table.
                 </div>
               )}
 
-              {result && result.columns.length === 0 && !queryError && (
-                <div style={{ color: "#55665f" }}>No rows returned.</div>
+              {resultInfo && !queryError && (
+                <div style={{ color: "#55665f", marginBottom: "12px" }}>{resultInfo}</div>
               )}
 
               {result && result.columns.length > 0 && (
                 <>
-                  {result.rows.length === 0 ? (
-                    <div style={{ color: "#55665f" }}>No rows returned.</div>
-                  ) : (
+                  {result.rows.length === 0 ? null : (
                     <table
                       style={{
                         width: "100%",
@@ -528,22 +643,23 @@ function LoadedQueryWorkspace({
                         {pagedRows.map((row, rowIndex) => (
                           <tr key={`${page}-${rowIndex}`}>
                             {row.map((cell, cellIndex) => {
-                              const displayValue =
-                                cell === null ? "" : String(cell);
+                              const isNull = cell === null;
+                              const displayValue = isNull ? "NULL" : String(cell);
 
                               return (
                                 <td
                                   key={`${rowIndex}-${cellIndex}`}
-                                  title={displayValue}
+                                  title={isNull ? "" : displayValue}
                                   style={{
                                     padding: "12px",
-                                    borderBottom:
-                                      "1px solid rgba(29, 42, 38, 0.08)",
+                                    borderBottom: "1px solid rgba(29, 42, 38, 0.08)",
                                     maxWidth: "320px",
                                     overflow: "hidden",
                                     textOverflow: "ellipsis",
                                     whiteSpace: "nowrap",
                                     verticalAlign: "top",
+                                    color: isNull ? "#9aa89f" : undefined,
+                                    fontStyle: isNull ? "italic" : undefined,
                                   }}
                                 >
                                   {displayValue}
@@ -567,6 +683,7 @@ function LoadedQueryWorkspace({
                       }}
                     >
                       <button
+                        type="button"
                         onClick={() => setPage((current) => Math.max(0, current - 1))}
                         disabled={page === 0}
                         style={{
@@ -583,6 +700,7 @@ function LoadedQueryWorkspace({
                         Page {page + 1} of {totalPages}
                       </div>
                       <button
+                        type="button"
                         onClick={() =>
                           setPage((current) => Math.min(totalPages - 1, current + 1))
                         }

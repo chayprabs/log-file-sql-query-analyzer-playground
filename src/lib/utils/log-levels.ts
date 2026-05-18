@@ -1,4 +1,13 @@
-import { LogLevel } from '@/types';
+export type LogLevel =
+  | "trace"
+  | "debug"
+  | "info"
+  | "notice"
+  | "warning"
+  | "error"
+  | "critical"
+  | "fatal"
+  | "unknown";
 
 const LEVEL_KEYWORDS: Record<LogLevel, string[]> = {
   fatal: ['fatal', 'crit', 'critical', 'emergency'],

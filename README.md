@@ -110,7 +110,7 @@ npm run serve:out
 | `npm run lint` | ESLint |
 | `npm test` | Vitest unit tests (`src/lib/engine/__tests__/`) |
 | `npm run test:watch` | Vitest watch mode |
-| `npm run test:e2e` | Playwright end-to-end tests (builds then serves `out/`) |
+| `npm run test:e2e` | Playwright E2E (builds, then serves `out/` on **127.0.0.1:4173**; CI uses a fresh server) |
 
 `postinstall` copies sql.js WASM files into `public/` (see above).
 
@@ -125,8 +125,6 @@ Everything runs **after initial page load** in the browser:
 3. **`src/app/query/page.tsx`** — SQL workspace, schema, suggestions, results, export, history.
 4. **`src/lib/engine/db.ts`** — sql.js bootstrap with **`locateFile`** pointing at **same-origin** `/sql-wasm-browser.wasm` (never a remote CDN).
 
-**Legacy code** may still exist under `src/components/`, `src/lib/parser/`, `src/lib/database/`, and `src/stores/` — it is **not** the active path; new work should go through **`src/lib/engine/`** and the App Router pages above.
-
 ---
 
 ## Limits (enforced client-side)
@@ -136,7 +134,7 @@ Everything runs **after initial page load** in the browser:
 | Maximum file size | **500 MB** |
 | Confirm slow parse | **> 100 MB** |
 | Large-file warning (badge) | **50 MB – 100 MB** |
-| Binary detection window | First **8 KB** after decode |
+| Binary detection window | First **8 KB** of **raw file bytes** (before text decode) |
 | Row insert batch | **5,000** rows per transaction chunk |
 | Format detector sample | Up to **20** non-trivial lines |
 | Query history | **10** SQL strings (`localStorage` only) |
@@ -212,7 +210,6 @@ Topics improve **GitHub’s own search** and signal intent to visitors. Consider
 | Styling | **Tailwind CSS 4** |
 | Query engine | **sql.js 1.14.x** (SQLite WASM) |
 | Dates | **date-fns 4** |
-| Client state (legacy path only) | **Zustand 5** |
 | Unit tests | **Vitest 4** |
 
 ---

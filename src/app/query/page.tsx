@@ -11,12 +11,14 @@ import {
 } from "react";
 import { useRouter } from "next/navigation";
 import { useLog } from "@/context/LogContext";
+import { useUnsavedSql } from "@/context/UnsavedSqlContext";
 import { QueryResult } from "@/lib/engine/db";
+import { QUERY_HISTORY_MAX, QUERY_RESULT_PAGE_SIZE } from "@/lib/engine/limits";
 import { getSuggestions } from "@/lib/engine/suggestions";
 
 const DEFAULT_QUERY = "SELECT * FROM logs LIMIT 100";
 const HISTORY_KEY = "lnav-web.query-history";
-const PAGE_SIZE = 100;
+const PAGE_SIZE = QUERY_RESULT_PAGE_SIZE;
 
 function readQueryHistory(): string[] {
   if (typeof window === "undefined") {
@@ -36,7 +38,7 @@ function readQueryHistory(): string[] {
 
     return parsed
       .filter((entry): entry is string => typeof entry === "string")
-      .slice(0, 10);
+      .slice(0, QUERY_HISTORY_MAX);
   } catch {
     return [];
   }
@@ -51,7 +53,7 @@ function stripLeadingComments(sql: string): string {
 
 function isPotentiallyMutatingSql(sql: string): boolean {
   const trimmed = stripLeadingComments(sql);
-  return trimmed.length > 0 && !/^(select|with|values|explain)\b/i.test(trimmed);
+  return trimmed.length > 0 && !/^(select|with|values|explain|pragma)\b/i.test(trimmed);
 }
 
 function buildCsv(result: QueryResult): string {
@@ -109,7 +111,7 @@ function LoadedQueryWorkspace({
       const nextHistory = [
         trimmed,
         ...currentHistory.filter((entry) => entry !== trimmed),
-      ].slice(0, 10);
+      ].slice(0, QUERY_HISTORY_MAX);
 
       window.localStorage.setItem(HISTORY_KEY, JSON.stringify(nextHistory));
       return nextHistory;
@@ -162,6 +164,27 @@ function LoadedQueryWorkspace({
     },
     [runQuery, saveQueryToHistory]
   );
+
+  const { registerDirtyCheck } = useUnsavedSql();
+
+  useEffect(() => {
+    return registerDirtyCheck(
+      () => sql.trim() !== lastExecutedSql.current.trim()
+    );
+  }, [registerDirtyCheck, sql]);
+
+  useEffect(() => {
+    const onBeforeUnload = (event: BeforeUnloadEvent): void => {
+      if (sql.trim() === lastExecutedSql.current.trim()) {
+        return;
+      }
+      event.preventDefault();
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => {
+      window.removeEventListener("beforeunload", onBeforeUnload);
+    };
+  }, [sql]);
 
   const onWindowKeyDown = useEffectEvent((event: KeyboardEvent) => {
     if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
@@ -442,6 +465,7 @@ function LoadedQueryWorkspace({
                   value={sql}
                   onChange={(event) => setSql(event.target.value)}
                   spellCheck={false}
+                  aria-label="SQL query editor. Press Control Enter or Command Enter to run."
                   style={{
                     minHeight: "140px",
                     resize: "vertical",
@@ -747,13 +771,24 @@ export default function QueryPage() {
   }, [db, loading, router]);
 
   if (loading) {
-    return <main style={{ padding: "24px" }}>Loading log database...</main>;
+    return (
+      <main style={{ padding: "24px", maxWidth: "560px", lineHeight: 1.6 }}>
+        <p style={{ margin: 0 }}>Preparing your log database…</p>
+        <p style={{ margin: "8px 0 0", color: "#555" }}>
+          Large files are inserted in batches so the page can stay responsive.
+        </p>
+      </main>
+    );
   }
 
   if (!db) {
     return (
-      <main style={{ padding: "24px" }}>
-        No log file is loaded. Redirecting back to the upload page...
+      <main style={{ padding: "24px", maxWidth: "560px", lineHeight: 1.6 }}>
+        <p style={{ margin: 0 }}>No log file is loaded.</p>
+        <p style={{ margin: "8px 0 0", color: "#555" }}>
+          If you closed this tab or cleared the session, upload a file again from the home page.
+          Redirecting…
+        </p>
       </main>
     );
   }

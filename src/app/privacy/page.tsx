@@ -48,12 +48,13 @@ export default function PrivacyPage() {
 
       <h2>Contact</h2>
       <p>
-        For questions about this privacy notice, contact{" "}
-        <a href="mailto:your.contact@example.com">your.contact@example.com</a>.
+        For questions about this privacy notice, contact the project maintainer via the public
+        source repository for this application (issues or discussions), or replace this paragraph
+        with a dedicated support email for your deployment.
       </p>
 
       <p style={{ color: "#55665f", fontSize: "0.95rem" }}>
-        Last updated: May 17, 2026
+        Last updated: May 18, 2026
       </p>
     </main>
   );

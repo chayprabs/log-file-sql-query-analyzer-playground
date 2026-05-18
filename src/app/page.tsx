@@ -5,9 +5,10 @@ import { useRouter } from "next/navigation";
 import { useLog } from "@/context/LogContext";
 import type { LogFormat } from "@/lib/engine/formats";
 import { FORMATS } from "@/lib/engine/formats";
-
-const SOFT_WARNING_BYTES = 50 * 1024 * 1024;
-const LARGE_CONFIRM_BYTES = 100 * 1024 * 1024;
+import {
+  LARGE_CONFIRM_BYTES,
+  SOFT_WARNING_BYTES,
+} from "@/lib/engine/limits";
 
 export default function Home() {
   const router = useRouter();
@@ -122,6 +123,7 @@ export default function Home() {
               parsed into an in-memory `logs` table.
             </p>
             <p
+              id="upload-privacy-notice"
               style={{
                 margin: 0,
                 maxWidth: "720px",
@@ -184,7 +186,20 @@ export default function Home() {
         )}
 
         <section
+          role="button"
+          tabIndex={0}
+          aria-label="Upload a log file. Drop a file here or press Enter or Space to open the file picker."
+          aria-describedby="upload-privacy-notice dropzone-instructions"
           onClick={() => fileInputRef.current?.click()}
+          onKeyDown={(event: React.KeyboardEvent<HTMLElement>) => {
+            if (event.target !== event.currentTarget) {
+              return;
+            }
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              fileInputRef.current?.click();
+            }
+          }}
           onDragOver={(event) => {
             event.preventDefault();
             setIsDragging(true);
@@ -205,6 +220,7 @@ export default function Home() {
           <input
             ref={fileInputRef}
             type="file"
+            aria-label="Choose log file"
             onChange={handleFileInput}
             style={{ display: "none" }}
           />
@@ -258,7 +274,7 @@ export default function Home() {
               </div>
             ) : (
               <>
-                <div style={{ display: "grid", gap: "8px" }}>
+                <div id="dropzone-instructions" style={{ display: "grid", gap: "8px" }}>
                   <strong style={{ fontSize: "1.15rem" }}>
                     Drop a log file here
                   </strong>

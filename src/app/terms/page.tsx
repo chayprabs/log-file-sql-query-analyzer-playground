@@ -18,6 +18,14 @@ export default function TermsPage() {
     >
       <h1 style={{ marginTop: 0 }}>Terms of service</h1>
 
+      <section id="terms-of-use" style={{ scrollMarginTop: "24px" }}>
+        <h2>Terms of use</h2>
+        <p>
+          &quot;Terms of use&quot; and &quot;terms of service&quot; refer to the same agreement on
+          this page. Use of Lens is subject to the following sections.
+        </p>
+      </section>
+
       <h2>Use at your own risk</h2>
       <p>
         Lens is provided free of charge and as-is, without warranty of any kind,
@@ -58,7 +66,7 @@ export default function TermsPage() {
       </p>
 
       <p style={{ color: "#55665f", fontSize: "0.95rem" }}>
-        Last updated: May 17, 2026
+        Last updated: May 18, 2026
       </p>
     </main>
   );

@@ -7,19 +7,19 @@ export default defineConfig({
   retries: process.env.CI ? 1 : 0,
   reporter: process.env.CI ? "github" : "list",
   use: {
-    baseURL: "http://127.0.0.1:3000",
+    baseURL: "http://127.0.0.1:4173",
     trace: "on-first-retry",
   },
   webServer: {
-    command: "npm run build && node scripts/serve-static.cjs out 3000",
-    url: "http://127.0.0.1:3000",
-    reuseExistingServer: false,
+    command: "npm run build && node scripts/serve-static.cjs out 4173",
+    url: "http://127.0.0.1:4173",
+    reuseExistingServer: !process.env.CI,
     timeout: 180_000,
   },
   projects: [
     {
       name: "chromium",
-      use: { ...devices["Desktop Chrome"] },
+      use: { ...devices["Desktop Chrome"], baseURL: "http://127.0.0.1:4173" },
     },
   ],
 });

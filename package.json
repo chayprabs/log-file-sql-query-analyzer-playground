@@ -12,15 +12,14 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "postinstall": "cp node_modules/sql.js/dist/sql-wasm.wasm public/ && cp node_modules/sql.js/dist/sql-wasm-browser.wasm public/"
+    "postinstall": "node scripts/copy-sql-wasm.cjs"
   },
   "dependencies": {
     "date-fns": "^4.1.0",
     "next": "^16.2.6",
     "react": "19.2.4",
     "react-dom": "19.2.4",
-    "sql.js": "^1.14.1",
-    "zustand": "^5.0.12"
+    "sql.js": "^1.14.1"
   },
   "devDependencies": {
     "@playwright/test": "^1.52.0",

@@ -19,6 +19,17 @@ const mimeTypes = {
   ".wasm": "application/wasm",
 };
 
+/** Mirrors security headers in public/_headers for local smoke testing. */
+const securityHeaders = {
+  "Content-Security-Policy":
+    "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' blob:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'none'",
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "DENY",
+  "Referrer-Policy": "strict-origin-when-cross-origin",
+  "X-XSS-Protection": "0",
+  "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+};
+
 function resolvePath(urlPath) {
   const cleanPath = decodeURIComponent((urlPath || "/").split("?")[0]);
   const normalized = cleanPath === "/" ? "/index.html" : cleanPath;
@@ -47,6 +58,7 @@ const server = http.createServer((request, response) => {
 
   const ext = path.extname(filePath).toLowerCase();
   response.writeHead(200, {
+    ...securityHeaders,
     "Content-Type": mimeTypes[ext] || "application/octet-stream",
   });
   fs.createReadStream(filePath).pipe(response);

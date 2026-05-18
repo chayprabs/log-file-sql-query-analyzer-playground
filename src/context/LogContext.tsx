@@ -14,6 +14,10 @@ import {
   LogDatabase,
   QueryResult,
 } from "@/lib/engine/db";
+import {
+  LARGE_CONFIRM_BYTES,
+  MAX_FILE_BYTES,
+} from "@/lib/engine/limits";
 import type { LogFormat } from "@/lib/engine/formats";
 
 export interface LoadFileOptions {
@@ -32,9 +36,6 @@ interface LogContextType {
 }
 
 const LogContext = createContext<LogContextType | undefined>(undefined);
-
-const MAX_FILE_BYTES = 500 * 1024 * 1024;
-const LARGE_CONFIRM_BYTES = 100 * 1024 * 1024;
 
 export function LogProvider({ children }: { children: ReactNode }) {
   const [db, setDb] = useState<LogDatabase | null>(null);
@@ -117,7 +118,8 @@ export function LogProvider({ children }: { children: ReactNode }) {
         return {
           columns: [],
           rows: [],
-          error: "No log file is loaded.",
+          error:
+            "No log file is loaded. Go to the home page, upload a log file, and try again.",
         };
       }
 

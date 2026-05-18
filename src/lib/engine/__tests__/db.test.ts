@@ -108,11 +108,44 @@ vi.mock("sql.js", () => ({
   }),
 }));
 
-import { closeDatabase, loadLogFile } from "../db";
+import initSqlJs from "sql.js";
+import { closeDatabase, loadLogFile, resetSqlEngineStateForTests } from "../db";
 
 describe("loadLogFile", () => {
   beforeEach(() => {
     closeDatabase();
+    resetSqlEngineStateForTests();
+    vi.mocked(initSqlJs).mockResolvedValue({
+      Database: mockedSqlJs.FakeDatabase,
+    } as never);
+  });
+
+  it("rejects binary content when a NUL byte appears in the first 8KB of bytes", async () => {
+    const file = new File([new Uint8Array([0x41, 0x00, 0x42, 0x0a])], "bad.log", {
+      type: "text/plain",
+    });
+
+    await expect(loadLogFile(file)).rejects.toThrow(
+      /This does not appear to be a text file/i
+    );
+  });
+
+  it("surfaces a friendly error when sql.js fails to init and can succeed on retry", async () => {
+    vi.mocked(initSqlJs).mockRejectedValueOnce(new Error("Simulated WASM failure"));
+
+    const file = new File(['{"level":"info","message":"one"}'], "retry.json", {
+      type: "application/json",
+    });
+
+    await expect(loadLogFile(file)).rejects.toThrow(/Could not start the local SQL engine/);
+
+    resetSqlEngineStateForTests();
+    vi.mocked(initSqlJs).mockResolvedValue({
+      Database: mockedSqlJs.FakeDatabase,
+    } as never);
+
+    const database = await loadLogFile(file);
+    expect(database.rowCount).toBe(1);
   });
 
   it("normalizes CRLF line endings and strips a BOM", async () => {

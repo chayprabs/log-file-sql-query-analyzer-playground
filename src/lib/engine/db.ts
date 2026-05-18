@@ -11,7 +11,11 @@ import {
   parseGeneric,
   ParsedLogRecord,
 } from "./formats";
-
+import {
+  BINARY_SNIFF_BYTES,
+  MAX_FILE_BYTES,
+  ROW_BATCH_SIZE,
+} from "./limits";
 export interface QueryResult {
   columns: string[];
   rows: (string | number | null)[][];
@@ -31,6 +35,13 @@ export interface LoadLogFileOptions {
   formatOverride?: LogFormat["name"];
 }
 
+export const LOGS_TABLE_NAME = "logs";
+
+export const BASE_SCHEMA: ColumnDef[] = [
+  { name: "line_no", type: "INTEGER" },
+  { name: "raw", type: "TEXT" },
+];
+
 export interface LogDatabase {
   db: SqlJsDatabase;
   format: LogFormat;
@@ -49,19 +60,10 @@ interface RawRecord {
   lineNo: number;
 }
 
-const BATCH_SIZE = 5000;
-const BINARY_SNIFF_BYTES = 8192;
-const MAX_FILE_BYTES = 500 * 1024 * 1024;
-
-export const LOGS_TABLE_NAME = "logs";
-
-export const BASE_SCHEMA: ColumnDef[] = [
-  { name: "line_no", type: "INTEGER" },
-  { name: "raw", type: "TEXT" },
-];
-
 let sqlModulePromise: Promise<SqlJsStatic> | null = null;
 let currentDatabase: SqlJsDatabase | null = null;
+
+const BATCH_SIZE = ROW_BATCH_SIZE;
 
 function escapeIdentifier(identifier: string): string {
   return `"${identifier.replace(/"/g, '""')}"`;
@@ -75,10 +77,25 @@ function getWasmPath(file: string): string {
   return new URL(`/${file}`, window.location.origin).toString();
 }
 
+/** Testing: clear stuck or rejected init promise between Vitest cases. */
+export function resetSqlEngineStateForTests(): void {
+  sqlModulePromise = null;
+}
+
+function formatSqlInitError(cause: unknown): Error {
+  const detail = cause instanceof Error ? cause.message : String(cause);
+  return new Error(
+    `Could not start the local SQL engine (WebAssembly). Ensure sql-wasm-browser.wasm is available and served with Content-Type: application/wasm (use the project static server for local previews). Details: ${detail}`
+  );
+}
+
 async function getSqlModule(): Promise<SqlJsStatic> {
   if (!sqlModulePromise) {
     sqlModulePromise = initSqlJs({
       locateFile: (file) => getWasmPath(file),
+    }).catch((error: unknown) => {
+      sqlModulePromise = null;
+      throw formatSqlInitError(error);
     });
   }
 
@@ -100,8 +117,17 @@ function rewriteQueryError(message: string): string {
   return message;
 }
 
-async function readFileAsText(file: File): Promise<string> {
-  const buffer = await file.arrayBuffer();
+function binaryPrefixHasNullByte(bytes: Uint8Array, maxBytes: number): boolean {
+  const n = Math.min(bytes.length, maxBytes);
+  for (let i = 0; i < n; i += 1) {
+    if (bytes[i] === 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function decodeBufferToString(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
 
   if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
@@ -127,17 +153,6 @@ async function readFileAsText(file: File): Promise<string> {
 
 function normalizeContent(content: string): string {
   return content.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-}
-
-function containsNullByteInPrefix(text: string, maxBytes: number): boolean {
-  const limit = Math.min(text.length, maxBytes);
-  for (let index = 0; index < limit; index += 1) {
-    if (text.charCodeAt(index) === 0) {
-      return true;
-    }
-  }
-
-  return false;
 }
 
 function splitLineRecords(content: string): RawRecord[] {
@@ -255,11 +270,11 @@ function recordToRow(schema: ColumnDef[], record: ParsedLogRecord): (string | nu
   return schema.map((column) => coerceValue(record[column.name]));
 }
 
-function insertRowsInBatches(
+async function insertRowsInBatches(
   db: SqlJsDatabase,
   schema: ColumnDef[],
   rows: (string | number | null)[][]
-): void {
+): Promise<void> {
   if (!rows.length) {
     return;
   }
@@ -290,6 +305,12 @@ function insertRowsInBatches(
         db.run("ROLLBACK");
         throw error;
       }
+    }
+
+    if (typeof window !== "undefined" && offset + BATCH_SIZE < rows.length) {
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 0);
+      });
     }
   }
 }
@@ -328,7 +349,15 @@ function normalizeQueryRows(
   return rows.map((row) =>
     row.map((cell) => {
       if (cell instanceof Uint8Array) {
-        return null;
+        if (cell.length === 0) {
+          return "";
+        }
+
+        try {
+          return new TextDecoder("utf-8", { fatal: false }).decode(cell);
+        } catch {
+          return `[binary: ${cell.byteLength} bytes]`;
+        }
       }
 
       return cell;
@@ -382,13 +411,16 @@ export async function loadLogFile(
     }
   }
 
-  const rawContent = normalizeContent(await readFileAsText(file));
+  const buffer = await file.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
 
-  if (containsNullByteInPrefix(rawContent, BINARY_SNIFF_BYTES)) {
+  if (binaryPrefixHasNullByte(bytes, BINARY_SNIFF_BYTES)) {
     throw new Error(
       "This does not appear to be a text file. Only text-based log files are supported."
     );
   }
+
+  const rawContent = normalizeContent(decodeBufferToString(buffer));
 
   const rawLines = splitLineRecords(rawContent);
   const meaningfulLines = rawLines
@@ -448,7 +480,7 @@ export async function loadLogFile(
     }
   }
 
-  insertRowsInBatches(db, schema, rowsToInsert);
+  await insertRowsInBatches(db, schema, rowsToInsert);
   const rowCount = rowsToInsert.length;
 
   if (rowCount === 0) {
@@ -475,7 +507,8 @@ export async function loadLogFile(
         return {
           columns: [],
           rows: [],
-          error: "Database is closed",
+          error:
+            "The log database is no longer available. Upload your file again from the home page.",
         };
       }
 

@@ -8,7 +8,9 @@ Abbreviations: **I** = implemented in code, **T** = covered by automated test (V
 | WASM | Local `sql-wasm-browser.wasm`; no sql.js CDN | `db.ts` `locateFile`, `public/` | I, T |
 | Static export | `output: 'export'`, no SSR APIs | `next.config.ts` | I, T (build) |
 | File limit | Hard 500 MB | `limits.ts`, `LogContext`, `db.ts` | I, T |
-| File confirm | > 100 MB confirm | `LogContext` | I, M |
+| File confirm | > 100 MB confirm | `LogContext` | I, M (manual) |
+| Upload success summary | Badge before redirect to /query | `page.tsx` | I |
+| Upload progress | Spinner + Parsing label | `page.tsx`, `globals.css` | I |
 | File warning | 50–100 MB badge | `src/app/page.tsx` | I |
 | Replace file | Confirm | `LogContext` | I, T (E2E) |
 | Decode | BOM strip, CRLF, ArrayBuffer | `db.ts` `decodeBufferToString`, normalize | I, T |
@@ -25,7 +27,8 @@ Abbreviations: **I** = implemented in code, **T** = covered by automated test (V
 | Headers | CSP, X-Frame-Options, etc. | `public/_headers`, `serve-static.cjs` | I, M |
 | Legal | /privacy, /terms, /credits, footer | `app/*`, `layout.tsx` | I, T |
 | Privacy blurb | Upload page notice | `page.tsx` | I, T |
-| Error UI | error boundary | `app/error.tsx` | I |
+| Error UI | error boundary | `app/error.tsx`, `app/global-error.tsx` | I |
+| Nav guard | Unsaved SQL on back / links / tab close | `query/page.tsx`, `SiteFooter.tsx` | I |
 | SQL init | Retry / clear stuck promise | `db.ts` `getSqlModule` | I, T |
 | A11y | Upload dropzone role, SQL editor label | `page.tsx`, `query/page.tsx` | I |
 

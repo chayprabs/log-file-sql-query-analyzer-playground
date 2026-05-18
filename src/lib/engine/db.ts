@@ -289,22 +289,22 @@ async function insertRowsInBatches(
   for (let offset = 0; offset < rows.length; offset += BATCH_SIZE) {
     const slice = rows.slice(offset, offset + BATCH_SIZE);
 
-    for (let inner = 0; inner < slice.length; inner += safeRowsPerStatement) {
-      const chunk = slice.slice(inner, inner + safeRowsPerStatement);
-      const placeholders = chunk.map(() => rowPlaceholders).join(", ");
-      const params = chunk.flat();
+    db.run("BEGIN");
+    try {
+      for (let inner = 0; inner < slice.length; inner += safeRowsPerStatement) {
+        const chunk = slice.slice(inner, inner + safeRowsPerStatement);
+        const placeholders = chunk.map(() => rowPlaceholders).join(", ");
+        const params = chunk.flat();
 
-      db.run("BEGIN");
-      try {
         db.run(
           `INSERT INTO ${escapeIdentifier(LOGS_TABLE_NAME)} (${columnSql}) VALUES ${placeholders}`,
           params
         );
-        db.run("COMMIT");
-      } catch (error) {
-        db.run("ROLLBACK");
-        throw error;
       }
+      db.run("COMMIT");
+    } catch (error) {
+      db.run("ROLLBACK");
+      throw error;
     }
 
     if (typeof window !== "undefined" && offset + BATCH_SIZE < rows.length) {

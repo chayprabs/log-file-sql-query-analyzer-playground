@@ -24,6 +24,17 @@ export interface LoadFileOptions {
   formatOverride?: LogFormat["name"];
 }
 
+export interface LoadFileSuccess {
+  ok: true;
+  fileName: string;
+  formatDisplayName: string;
+  rowCount: number;
+  skippedCount: number;
+  detectionConfidence: number;
+}
+
+export type LoadFileResult = LoadFileSuccess | { ok: false };
+
 interface LogContextType {
   db: LogDatabase | null;
   loading: boolean;
@@ -31,7 +42,7 @@ interface LogContextType {
   fileName: string | null;
   progress: LoadProgress | null;
   clearError: () => void;
-  loadFile: (file: File, options?: LoadFileOptions) => Promise<boolean>;
+  loadFile: (file: File, options?: LoadFileOptions) => Promise<LoadFileResult>;
   runQuery: (sql: string) => QueryResult;
 }
 
@@ -57,16 +68,16 @@ export function LogProvider({ children }: { children: ReactNode }) {
     setError(null);
   }, []);
 
-  const loadFile = useCallback(async (file: File, options?: LoadFileOptions): Promise<boolean> => {
+  const loadFile = useCallback(async (file: File, options?: LoadFileOptions): Promise<LoadFileResult> => {
     if (file.size > MAX_FILE_BYTES) {
       setError("File is too large. Maximum is 500 MB.");
-      return false;
+      return { ok: false };
     }
 
     if (typeof window !== "undefined" && db) {
       const shouldReplace = window.confirm("Replace the current file?");
       if (!shouldReplace) {
-        return false;
+        return { ok: false };
       }
     }
 
@@ -75,7 +86,7 @@ export function LogProvider({ children }: { children: ReactNode }) {
         "This file is large and may take 30+ seconds to parse. Continue?"
       );
       if (!shouldContinue) {
-        return false;
+        return { ok: false };
       }
     }
 
@@ -98,7 +109,14 @@ export function LogProvider({ children }: { children: ReactNode }) {
       setFileName(file.name);
       setProgress(null);
 
-      return true;
+      return {
+        ok: true,
+        fileName: file.name,
+        formatDisplayName: nextDb.format.displayName,
+        rowCount: nextDb.rowCount,
+        skippedCount: nextDb.skippedCount,
+        detectionConfidence: nextDb.detectionConfidence,
+      };
     } catch (loadError) {
       setError(
         loadError instanceof Error
@@ -106,7 +124,7 @@ export function LogProvider({ children }: { children: ReactNode }) {
           : "Failed to load the selected file."
       );
       setProgress(null);
-      return false;
+      return { ok: false };
     } finally {
       setLoading(false);
     }

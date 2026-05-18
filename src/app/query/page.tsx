@@ -186,6 +186,26 @@ function LoadedQueryWorkspace({
     };
   }, [sql]);
 
+  useEffect(() => {
+    const leaveMessage =
+      "You have SQL in the editor that differs from the last run query. Leave this page?";
+
+    const onPopState = (): void => {
+      if (sql.trim() === lastExecutedSql.current.trim()) {
+        return;
+      }
+      if (!window.confirm(leaveMessage)) {
+        window.history.pushState({ lensQueryGuard: true }, "", window.location.href);
+      }
+    };
+
+    window.history.pushState({ lensQueryGuard: true }, "", window.location.href);
+    window.addEventListener("popstate", onPopState);
+    return () => {
+      window.removeEventListener("popstate", onPopState);
+    };
+  }, [sql]);
+
   const onWindowKeyDown = useEffectEvent((event: KeyboardEvent) => {
     if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
       event.preventDefault();

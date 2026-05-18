@@ -1,8 +1,8 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { useLog } from "@/context/LogContext";
+import { useLog, type LoadFileSuccess } from "@/context/LogContext";
 import type { LogFormat } from "@/lib/engine/formats";
 import { FORMATS } from "@/lib/engine/formats";
 import {
@@ -19,18 +19,37 @@ export default function Home() {
     undefined
   );
   const { db, error, fileName, loadFile, loading, progress, clearError } = useLog();
+  const [loadSummary, setLoadSummary] = useState<LoadFileSuccess | null>(null);
+  const redirectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (redirectTimerRef.current) {
+        clearTimeout(redirectTimerRef.current);
+      }
+    };
+  }, []);
 
   const handleSelectedFile = async (file: File): Promise<void> => {
     clearError();
+    setLoadSummary(null);
+    if (redirectTimerRef.current) {
+      clearTimeout(redirectTimerRef.current);
+      redirectTimerRef.current = null;
+    }
+
     setShowLargeBadge(
       file.size > SOFT_WARNING_BYTES && file.size <= LARGE_CONFIRM_BYTES
     );
 
     const options = formatOverride ? { formatOverride } : undefined;
 
-    const loaded = await loadFile(file, options);
-    if (loaded) {
-      router.push("/query");
+    const result = await loadFile(file, options);
+    if (result.ok) {
+      setLoadSummary(result);
+      redirectTimerRef.current = setTimeout(() => {
+        router.push("/query");
+      }, 1200);
     }
   };
 
@@ -264,13 +283,60 @@ export default function Home() {
               </div>
             )}
 
-            {loading ? (
-              <div style={{ display: "grid", gap: "8px" }}>
+            {loadSummary && !loading ? (
+              <div
+                style={{
+                  display: "grid",
+                  gap: "10px",
+                  maxWidth: "520px",
+                  padding: "14px 18px",
+                  borderRadius: "16px",
+                  background: "rgba(35, 75, 61, 0.1)",
+                  color: "#234b3d",
+                }}
+              >
+                <strong style={{ fontSize: "1.05rem" }}>File loaded</strong>
+                <span style={{ color: "#42544c", lineHeight: 1.6 }}>
+                  Detected: {loadSummary.formatDisplayName}
+                  {loadSummary.detectionConfidence > 0
+                    ? ` (${loadSummary.detectionConfidence}% confidence)`
+                    : ""}
+                  {" · "}
+                  {loadSummary.rowCount.toLocaleString()} rows loaded
+                  {loadSummary.skippedCount > 0
+                    ? ` · ${loadSummary.skippedCount.toLocaleString()} rows skipped`
+                    : ""}
+                </span>
+                <span style={{ color: "#55665f", fontSize: "0.92rem" }}>
+                  Opening query workspace…
+                </span>
+              </div>
+            ) : loading ? (
+              <div
+                style={{
+                  display: "grid",
+                  gap: "10px",
+                  justifyItems: "center",
+                }}
+              >
+                <div
+                  aria-hidden
+                  style={{
+                    width: "40px",
+                    height: "40px",
+                    borderRadius: "50%",
+                    border: "3px solid rgba(35, 75, 61, 0.2)",
+                    borderTopColor: "#234b3d",
+                    animation: "lens-spin 0.9s linear infinite",
+                  }}
+                />
+                <div style={{ display: "grid", gap: "8px", textAlign: "center" }}>
                 <strong style={{ fontSize: "1.05rem" }}>{progressLabel}</strong>
                 <span style={{ color: "#55665f" }}>
                   Large files stay responsive because rows are inserted in
                   batches.
                 </span>
+                </div>
               </div>
             ) : (
               <>

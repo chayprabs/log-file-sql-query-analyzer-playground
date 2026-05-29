@@ -1,0 +1,2 @@
+<134>Oct 11 22:14:15 myhost su[12345]: Successful su for root by admin
+<30>Oct 11 22:14:16 myhost systemd[1]: Started Session 42 of user admin.

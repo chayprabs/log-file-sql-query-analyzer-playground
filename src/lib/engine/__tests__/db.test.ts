@@ -218,6 +218,44 @@ describe("loadLogFile", () => {
     });
   });
 
+  it("rewrites missing-column errors into friendly messages", async () => {
+    const file = new File(['{"level":"info","message":"one"}'], "query.json", {
+      type: "application/json",
+    });
+
+    const database = await loadLogFile(file);
+    const result = database.query("SELECT not_a_real_column FROM logs");
+
+    expect(result.error).toMatch(/Column "not_a_real_column" doesn't exist/i);
+  });
+
+  it("infers JSON columns from lines after the first hundred", async () => {
+    const lines = Array.from({ length: 150 }, (_, index) =>
+      JSON.stringify(
+        index === 149
+          ? { level: "info", message: "late", extra_field: "present" }
+          : { level: "info", message: `line-${index}` }
+      )
+    ).join("\n");
+
+    const file = new File([lines], "wide.jsonl", { type: "application/json" });
+    const database = await loadLogFile(file);
+    const result = database.query(
+      "SELECT extra_field FROM logs WHERE extra_field IS NOT NULL"
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(result.rows.length).toBeGreaterThan(0);
+  });
+
+  it("rejects unknown format overrides", async () => {
+    const file = new File(["hello world"], "plain.txt", { type: "text/plain" });
+
+    await expect(
+      loadLogFile(file, { formatOverride: "not_a_format" as "nginx_access" })
+    ).rejects.toThrow(/Unknown log format/i);
+  });
+
   it("supports large-file confirmation hooks", async () => {
     const file = new File(['{"level":"info","message":"one"}'], "query.json", {
       type: "application/json",

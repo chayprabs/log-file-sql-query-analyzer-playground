@@ -176,6 +176,12 @@ export function LensQueryWorkspace({ onLoadAnother }: LensQueryWorkspaceProps = 
     },
     [runQuery, saveQueryToHistory]
   );
+  useEffect(() => {
+    if (!db) return;
+    executeQuery(DEFAULT_QUERY);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once when workspace opens for this file
+  }, [db?.format.name, db?.rowCount, fileName]);
+
 
   const { registerDirtyCheck } = useUnsavedSql();
 
@@ -428,7 +434,10 @@ export function LensQueryWorkspace({ onLoadAnother }: LensQueryWorkspaceProps = 
                     <button
                       type="button"
                       key={entry}
-                      onClick={() => setSql(entry)}
+                      onClick={() => {
+                        setSql(entry);
+                        executeQuery(entry);
+                      }}
                       className="max-w-full truncate rounded-full border border-neutral-200 bg-neutral-50 px-2.5 py-1 font-mono text-xs text-neutral-800 hover:bg-white"
                       title={entry}
                     >
@@ -446,10 +455,12 @@ export function LensQueryWorkspace({ onLoadAnother }: LensQueryWorkspaceProps = 
             </div>
           )}
 
-          <div className="px-4 pt-3 text-xs text-neutral-500">
-            Showing {showingStart.toLocaleString()}–{showingEnd.toLocaleString()}{" "}
-            of {totalRows.toLocaleString()} rows
-          </div>
+          {result && (
+            <div className="px-4 pt-3 text-xs text-neutral-500">
+              Showing {showingStart.toLocaleString()}–{showingEnd.toLocaleString()}{" "}
+              of {totalRows.toLocaleString()} rows
+            </div>
+          )}
 
           <div className="overflow-x-auto p-4 pt-2">
             {!result && !queryError && !resultInfo && (
@@ -470,7 +481,7 @@ export function LensQueryWorkspace({ onLoadAnother }: LensQueryWorkspaceProps = 
                       {result.columns.map((column) => (
                         <th
                           key={column}
-                          className="sticky top-0 border-b border-neutral-200 bg-neutral-50 px-3 py-2 text-left font-medium text-neutral-800"
+                          scope="col" className="sticky top-0 border-b border-neutral-200 bg-neutral-50 px-3 py-2 text-left font-medium text-neutral-800"
                         >
                           {column}
                         </th>

@@ -1,18 +1,23 @@
 import initSqlJs, { Database as SqlJsDatabase, SqlJsStatic } from "sql.js";
-import { detectFormat, DetectionResult } from "./detector";
+import type { DetectionResult } from "./detector";
 import {
+  addRecordToJsonSchemaBuilder,
   CellValue,
   ColumnDef,
+  createJsonSchemaBuilder,
   getFormat,
   getSchemaForFormat,
-  inferJsonSchema,
   isJournaldRecordLine,
   LogFormat,
   parseGeneric,
   ParsedLogRecord,
+  schemaFromJsonBuilder,
 } from "./formats";
+import { detectFormatFromContent } from "./detector-content";
+import { checkAborted, LoadCancelledError, yieldToMainThread } from "./load-cancel";
 import {
   BINARY_SNIFF_BYTES,
+  JSON_SCHEMA_SCAN_YIELD_EVERY,
   MAX_FILE_BYTES,
   ROW_BATCH_SIZE,
 } from "./limits";
@@ -22,7 +27,10 @@ export interface QueryResult {
   error?: string;
 }
 
+export type LoadProgressPhase = "reading" | "parsing" | "inserting";
+
 export interface LoadProgress {
+  phase: LoadProgressPhase;
   current: number;
   total: number;
 }
@@ -33,7 +41,10 @@ export interface LoadLogFileOptions {
   onProgress?: (progress: LoadProgress) => void;
   /** When set, skip auto-detection and parse with this format. */
   formatOverride?: LogFormat["name"];
+  signal?: AbortSignal;
 }
+
+export { LoadCancelledError } from "./load-cancel";
 
 export const LOGS_TABLE_NAME = "logs";
 
@@ -273,7 +284,11 @@ function recordToRow(schema: ColumnDef[], record: ParsedLogRecord): (string | nu
 async function insertRowsInBatches(
   db: SqlJsDatabase,
   schema: ColumnDef[],
-  rows: (string | number | null)[][]
+  rows: (string | number | null)[][],
+  options: {
+    onProgress?: (progress: LoadProgress) => void;
+    signal?: AbortSignal;
+  } = {}
 ): Promise<void> {
   if (!rows.length) {
     return;
@@ -307,10 +322,15 @@ async function insertRowsInBatches(
       throw error;
     }
 
+    options.onProgress?.({
+      phase: "inserting",
+      current: Math.min(offset + slice.length, rows.length),
+      total: rows.length,
+    });
+    checkAborted(options.signal);
+
     if (typeof window !== "undefined" && offset + BATCH_SIZE < rows.length) {
-      await new Promise<void>((resolve) => {
-        setTimeout(resolve, 0);
-      });
+      await yieldToMainThread();
     }
   }
 }
@@ -375,17 +395,18 @@ function reportProgress(
 }
 
 function resolveDetection(
-  meaningfulLines: string[],
+  rawContent: string,
   options: LoadLogFileOptions
 ): { format: LogFormat; detection: DetectionResult | null } {
   if (options.formatOverride) {
     const forced = getFormat(options.formatOverride);
-    if (forced) {
-      return { format: forced, detection: null };
+    if (!forced) {
+      throw new Error(`Unknown log format "${options.formatOverride}".`);
     }
+    return { format: forced, detection: null };
   }
 
-  const detection = detectFormat(meaningfulLines);
+  const detection = detectFormatFromContent(rawContent);
   return { format: detection.format, detection };
 }
 
@@ -411,7 +432,12 @@ export async function loadLogFile(
     }
   }
 
+  checkAborted(options.signal);
+  reportProgress(options.onProgress, { phase: "reading", current: 0, total: 1 });
+
   const buffer = await file.arrayBuffer();
+  checkAborted(options.signal);
+
   const bytes = new Uint8Array(buffer);
 
   if (binaryPrefixHasNullByte(bytes, BINARY_SNIFF_BYTES)) {
@@ -421,6 +447,7 @@ export async function loadLogFile(
   }
 
   const rawContent = normalizeContent(decodeBufferToString(buffer));
+  checkAborted(options.signal);
 
   const rawLines = splitLineRecords(rawContent);
   const meaningfulLines = rawLines
@@ -431,23 +458,37 @@ export async function loadLogFile(
     throw new Error("No log lines could be parsed from this file.");
   }
 
-  const { format, detection } = resolveDetection(meaningfulLines, options);
+  const { format, detection } = resolveDetection(rawContent, options);
   const records = getRecordsForFormat(format, rawContent);
 
-  const parsedJsonRecords =
-    format.name === "json"
-      ? records
-          .map((record) => format.parse(record.text, record.lineNo))
-          .filter((record): record is ParsedLogRecord => record !== null)
-          .slice(0, 100)
-      : [];
+  let inferredJsonSchema: ColumnDef[] | undefined;
+  if (format.name === "json") {
+    const builder = createJsonSchemaBuilder();
+    for (let index = 0; index < records.length; index += 1) {
+      checkAborted(options.signal);
+      const record = records[index];
+      const parsed = format.parse(record.text, record.lineNo);
+      if (parsed) {
+        addRecordToJsonSchemaBuilder(builder, parsed);
+      }
+      if (index > 0 && index % JSON_SCHEMA_SCAN_YIELD_EVERY === 0) {
+        await yieldToMainThread();
+        reportProgress(options.onProgress, {
+          phase: "parsing",
+          current: index,
+          total: records.length,
+        });
+      }
+    }
+    inferredJsonSchema = schemaFromJsonBuilder(builder);
+  }
 
-  const schema = getFullSchema(
-    format,
-    format.name === "json" ? inferJsonSchema(parsedJsonRecords) : undefined
-  );
+  const schema = getFullSchema(format, inferredJsonSchema);
+
+  reportProgress(options.onProgress, { phase: "parsing", current: 0, total: records.length });
 
   const SQL = await getSqlModule();
+  checkAborted(options.signal);
   const db = new SQL.Database();
   currentDatabase = db;
   createLogsTable(db, schema);
@@ -456,6 +497,7 @@ export async function loadLogFile(
   let skippedCount = 0;
 
   for (let index = 0; index < records.length; index += 1) {
+    checkAborted(options.signal);
     const record = records[index];
     const parsed =
       format.parse(record.text, record.lineNo) ??
@@ -463,10 +505,13 @@ export async function loadLogFile(
 
     if (!parsed) {
       skippedCount += 1;
-      reportProgress(options.onProgress, {
-        current: index + 1,
-        total: records.length,
-      });
+      if ((index + 1) % 200 === 0 || index === records.length - 1) {
+        reportProgress(options.onProgress, {
+          phase: "parsing",
+          current: index + 1,
+          total: records.length,
+        });
+      }
       continue;
     }
 
@@ -474,13 +519,21 @@ export async function loadLogFile(
 
     if ((index + 1) % 200 === 0 || index === records.length - 1) {
       reportProgress(options.onProgress, {
+        phase: "parsing",
         current: index + 1,
         total: records.length,
       });
     }
+
+    if (index > 0 && index % 200 === 0) {
+      await yieldToMainThread();
+    }
   }
 
-  await insertRowsInBatches(db, schema, rowsToInsert);
+  await insertRowsInBatches(db, schema, rowsToInsert, {
+    onProgress: options.onProgress,
+    signal: options.signal,
+  });
   const rowCount = rowsToInsert.length;
 
   if (rowCount === 0) {

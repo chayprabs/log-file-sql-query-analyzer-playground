@@ -1,9 +1,8 @@
-import fs from "node:fs";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
 
 test.describe("Lens", () => {
-  test("uploads sample nginx log and shows SQL results on home", async ({
+  test("uploads sample nginx log, navigates to query, and shows results", async ({
     page,
   }) => {
     const cdnUrls: string[] = [];
@@ -19,15 +18,11 @@ test.describe("Lens", () => {
       page.getByText(/Your log files never leave your browser/i)
     ).toBeVisible();
 
-    await expect(page.getByRole("link", { name: "Lens" })).toBeVisible();
-    await expect(
-      page.getByRole("link", { name: "View source on GitHub" })
-    ).toBeVisible();
-
     const samplePath = path.join(__dirname, "../public/sample.log");
-    await page.locator('input[type="file"]').first().setInputFiles(samplePath);
+    await page.locator('input[type="file"]').setInputFiles(samplePath);
 
-    await expect(page.locator("#workspace")).toBeVisible({ timeout: 60_000 });
+    await page.waitForURL("**/query**", { timeout: 60_000 });
+
     await expect(page.getByText(/nginx access log/i).first()).toBeVisible();
 
     expect(cdnUrls).toEqual([]);
@@ -41,8 +36,8 @@ test.describe("Lens", () => {
   test("exports query results as CSV", async ({ page }) => {
     await page.goto("/");
     const samplePath = path.join(__dirname, "../public/sample.log");
-    await page.locator('input[type="file"]').first().setInputFiles(samplePath);
-    await expect(page.locator("#workspace")).toBeVisible({ timeout: 60_000 });
+    await page.locator('input[type="file"]').setInputFiles(samplePath);
+    await page.waitForURL("**/query**", { timeout: 60_000 });
     await page.getByRole("button", { name: "Status breakdown" }).click();
     await expect(page.locator("tbody tr").first()).toBeVisible({ timeout: 30_000 });
 
@@ -59,20 +54,21 @@ test.describe("Lens", () => {
     expect(text).toMatch(/\d+/);
   });
 
-  test("legal pages load", async ({ page }) => {
+  test("legal and credits pages load", async ({ page }) => {
     await page.goto("/privacy");
-    await expect(page.getByRole("heading", { name: /privacy policy/i })).toBeVisible();
+    await expect(page.getByRole("heading", { name: /privacy/i })).toBeVisible();
 
     await page.goto("/terms");
-    await expect(
-      page.getByRole("heading", { name: /terms & conditions/i })
-    ).toBeVisible();
+    await expect(page.getByRole("heading", { name: /terms of service/i })).toBeVisible();
+
+    await page.goto("/credits");
+    await expect(page.getByRole("heading", { name: /credits/i })).toBeVisible();
   });
 
   test("rejects a binary file with a clear message", async ({ page }) => {
     await page.goto("/");
 
-    await page.locator('input[type="file"]').first().setInputFiles({
+    await page.locator('input[type="file"]').setInputFiles({
       name: "binary.bin",
       mimeType: "application/octet-stream",
       buffer: Buffer.from([0x00, 0xff, 0xd8, 0xff]),
@@ -90,18 +86,19 @@ test.describe("Lens", () => {
 
     await page.goto("/");
     const samplePath = path.join(__dirname, "../public/sample.log");
-    await page.locator('input[type="file"]').first().setInputFiles(samplePath);
-    await expect(page.locator("#workspace")).toBeVisible({ timeout: 60_000 });
+    await page.locator('input[type="file"]').setInputFiles(samplePath);
+    await page.waitForURL("**/query**", { timeout: 60_000 });
 
-    await page.getByRole("button", { name: "Load another file" }).click();
-    await page.locator('input[type="file"]').last().setInputFiles({
+    await page.getByRole("link", { name: "Home" }).click();
+    await page.waitForURL("**/", { timeout: 15_000 });
+
+    await page.locator('input[type="file"]').setInputFiles({
       name: "lines.jsonl",
       mimeType: "application/json",
       buffer: Buffer.from('{"level":"info","message":"e2e"}\n'),
     });
 
-    await expect(page.getByText(/JSON lines/i).first()).toBeVisible({
-      timeout: 60_000,
-    });
+    await page.waitForURL("**/query**", { timeout: 60_000 });
+    await expect(page.getByText(/JSON lines/i).first()).toBeVisible();
   });
 });

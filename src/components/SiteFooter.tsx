@@ -39,6 +39,16 @@ export function SiteFooter() {
         >
           Terms &amp; Conditions
         </Link>
+        <span className="text-neutral-300" aria-hidden>
+          ·
+        </span>
+        <Link
+          href="/help"
+          onClick={guardNav}
+          className="font-medium text-neutral-700 no-underline hover:text-neutral-900"
+        >
+          Help
+        </Link>
       </div>
     </footer>
   );

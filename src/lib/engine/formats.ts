@@ -746,38 +746,45 @@ const JSON_FIXED_KEYS = new Set([
   "message",
 ]);
 
-export function inferJsonSchema(records: ParsedLogRecord[]): ColumnDef[] {
-  const observedTypes = new Map<string, Set<ColumnDef["type"]>>();
+export type JsonSchemaBuilder = Map<string, Set<ColumnDef["type"]>>;
 
-  for (const record of records) {
-    for (const [key, value] of Object.entries(record)) {
-      if (JSON_FIXED_KEYS.has(key)) {
-        continue;
-      }
+export function createJsonSchemaBuilder(): JsonSchemaBuilder {
+  return new Map();
+}
 
-      const existing = observedTypes.get(key) ?? new Set<ColumnDef["type"]>();
-      if (value === null) {
-        observedTypes.set(key, existing);
-        continue;
-      }
-
-      if (typeof value === "number") {
-        existing.add(Number.isInteger(value) ? "INTEGER" : "REAL");
-      } else {
-        existing.add("TEXT");
-      }
-
-      observedTypes.set(key, existing);
+export function addRecordToJsonSchemaBuilder(
+  builder: JsonSchemaBuilder,
+  record: ParsedLogRecord
+): void {
+  for (const [key, value] of Object.entries(record)) {
+    if (JSON_FIXED_KEYS.has(key)) {
+      continue;
     }
-  }
 
+    const existing = builder.get(key) ?? new Set<ColumnDef["type"]>();
+    if (value === null) {
+      builder.set(key, existing);
+      continue;
+    }
+
+    if (typeof value === "number") {
+      existing.add(Number.isInteger(value) ? "INTEGER" : "REAL");
+    } else {
+      existing.add("TEXT");
+    }
+
+    builder.set(key, existing);
+  }
+}
+
+export function schemaFromJsonBuilder(builder: JsonSchemaBuilder): ColumnDef[] {
   const fixed: ColumnDef[] = [
     { name: "timestamp", type: "TEXT" },
     { name: "level", type: "TEXT" },
     { name: "message", type: "TEXT" },
   ];
 
-  const dynamic = Array.from(observedTypes.entries())
+  const dynamic = Array.from(builder.entries())
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([name, types]) => {
       if (types.has("TEXT") || types.size === 0) {
@@ -792,6 +799,14 @@ export function inferJsonSchema(records: ParsedLogRecord[]): ColumnDef[] {
     });
 
   return [...fixed, ...dynamic];
+}
+
+export function inferJsonSchema(records: ParsedLogRecord[]): ColumnDef[] {
+  const builder = createJsonSchemaBuilder();
+  for (const record of records) {
+    addRecordToJsonSchemaBuilder(builder, record);
+  }
+  return schemaFromJsonBuilder(builder);
 }
 
 export function getSchemaForFormat(

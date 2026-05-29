@@ -9,3 +9,6 @@ export const BINARY_SNIFF_BYTES = 8192;
 
 export const QUERY_RESULT_PAGE_SIZE = 100;
 export const QUERY_HISTORY_MAX = 10;
+
+/** Max JSON lines scanned for dynamic column inference (keys merged across entire file). */
+export const JSON_SCHEMA_SCAN_YIELD_EVERY = 500;

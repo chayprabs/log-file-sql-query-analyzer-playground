@@ -14,7 +14,7 @@ import {
   schemaFromJsonBuilder,
 } from "./formats";
 import { detectFormatFromContent } from "./detector-content";
-import { checkAborted, LoadCancelledError, yieldToMainThread } from "./load-cancel";
+import { checkAborted, yieldToMainThread } from "./load-cancel";
 import {
   BINARY_SNIFF_BYTES,
   JSON_SCHEMA_SCAN_YIELD_EVERY,

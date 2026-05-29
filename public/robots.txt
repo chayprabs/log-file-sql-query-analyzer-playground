@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://chayprabs.github.io/log-file-sql-query-analyzer-playground/sitemap.xml

@@ -41,7 +41,7 @@ Engineers investigating incidents need to **filter and aggregate** logs fast —
 - **In-memory SQLite** via sql.js: **`CREATE TABLE logs`** and **batched inserts** (5,000-row transaction chunks) for large files.
 - **Query UI:** schema panel, **format-specific SQL suggestions** (click to run), **Ctrl/Cmd+Enter** to execute, **paginated results** (100 rows per page), **CSV export** (`query-results.csv`), **recent query history** (last 10 queries, **SQL text only** in `localStorage`).
 - **Safety:** result cells rendered as **plain text** (no HTML injection from log payloads).
-- **Legal pages (static routes):** `/privacy`, `/terms`, `/credits` — plus footer links and MIT **LICENSE** at repo root.
+- **Legal pages (static routes):** `/privacy`, `/terms` — footer links and MIT **LICENSE** at repo root.
 
 ---
 

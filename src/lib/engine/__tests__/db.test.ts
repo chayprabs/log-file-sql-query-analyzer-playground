@@ -84,7 +84,10 @@ const mockedSqlJs = vi.hoisted(() => {
             values: this.rows.map((row) =>
               selectedColumns.map((column) => {
                 const index = this.columns.indexOf(column);
-                return index === -1 ? null : row[index];
+                if (index === -1) {
+                  throw new Error(`no such column: ${column}`);
+                }
+                return row[index];
               })
             ),
           },

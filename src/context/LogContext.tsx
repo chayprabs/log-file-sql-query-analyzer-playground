@@ -6,6 +6,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useRef,
   useState,
 } from "react";
 import {
@@ -49,6 +50,7 @@ interface LogContextType {
 const LogContext = createContext<LogContextType | undefined>(undefined);
 
 export function LogProvider({ children }: { children: ReactNode }) {
+  const loadInFlightRef = useRef(false);
   const [db, setDb] = useState<LogDatabase | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -69,6 +71,11 @@ export function LogProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const loadFile = useCallback(async (file: File, options?: LoadFileOptions): Promise<LoadFileResult> => {
+    if (loadInFlightRef.current) {
+      setError("A file is already being parsed. Please wait for it to finish.");
+      return { ok: false };
+    }
+
     if (file.size > MAX_FILE_BYTES) {
       setError("File is too large. Maximum is 500 MB.");
       return { ok: false };
@@ -90,6 +97,7 @@ export function LogProvider({ children }: { children: ReactNode }) {
       }
     }
 
+    loadInFlightRef.current = true;
     setLoading(true);
     setError(null);
     setProgress({ current: 0, total: 0 });
@@ -126,6 +134,7 @@ export function LogProvider({ children }: { children: ReactNode }) {
       setProgress(null);
       return { ok: false };
     } finally {
+      loadInFlightRef.current = false;
       setLoading(false);
     }
   }, [db]);

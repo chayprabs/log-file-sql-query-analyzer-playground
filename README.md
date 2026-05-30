@@ -8,7 +8,7 @@
 | --- | --- |
 | **Public name** | Lens |
 | **npm package** | `lnav-web` |
-| **Repository** | `log-file-sql-query-analyzer-playground` |
+| **Repository** | [log-file-sql-query-analyzer-playground](https://github.com/chayprabs/log-file-sql-query-analyzer-playground) |
 | **License** | [MIT](./LICENSE) |
 
 ---

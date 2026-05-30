@@ -8,8 +8,7 @@
 | --- | --- |
 | **Public name** | Lens |
 | **npm package** | `lnav-web` |
-| **Repository** | `log-file-sql-query-analyzer-playground` |
-| **Suite** | Authos ([authos.app](https://authos.app)) |
+| **Repository** | [log-file-sql-query-analyzer-playground](https://github.com/chayprabs/log-file-sql-query-analyzer-playground) |
 | **License** | [MIT](./LICENSE) |
 
 ---
@@ -39,11 +38,7 @@ Engineers investigating incidents need to **filter and aggregate** logs fast —
 - **File size policy:** hard cap **500 MB**; confirm above **100 MB**; **50–100 MB** “large file” warning (client-side only).
 - **Automatic format detection** from a sample of non-trivial lines; optional **manual format override**.
 - **In-memory SQLite** via sql.js: **`CREATE TABLE logs`** and **batched inserts** (5,000-row transaction chunks) for large files.
-- **Single-page workflow:** upload and SQL workspace on `/` (legacy `/query` route still works).
-- **Try sample log** button loads `public/sample.log` without a file picker.
-- **Cancel** in-flight parsing; **progress bar** for reading, parsing, and SQLite insert phases.
 - **Query UI:** schema panel, **format-specific SQL suggestions** (click to run), **Ctrl/Cmd+Enter** to execute, **paginated results** (100 rows per page), **CSV export** (`query-results.csv`), **recent query history** (last 10 queries, **SQL text only** in `localStorage`).
-- **Help & FAQ** at `/help`.
 - **Safety:** result cells rendered as **plain text** (no HTML injection from log payloads).
 - **Legal pages (static routes):** `/privacy`, `/terms`, `/credits` — plus footer links and MIT **LICENSE** at repo root.
 

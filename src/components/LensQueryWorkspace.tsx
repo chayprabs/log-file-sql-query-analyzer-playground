@@ -178,7 +178,9 @@ export function LensQueryWorkspace({ onLoadAnother }: LensQueryWorkspaceProps = 
   );
   useEffect(() => {
     if (!db) return;
-    executeQuery(DEFAULT_QUERY);
+    queueMicrotask(() => {
+      executeQuery(DEFAULT_QUERY);
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- run once when workspace opens for this file
   }, [db?.format.name, db?.rowCount, fileName]);
 

@@ -4,31 +4,39 @@
 
 | Version | Supported |
 | ------- | --------- |
-| main    | Yes       |
+| 0.1.x   | Yes       |
 
 ## Reporting a vulnerability
 
 If you discover a security issue in Lens, please report it responsibly:
 
-1. **Do not** open a public GitHub issue for undisclosed vulnerabilities.
-2. Open a private security advisory on the repository, or contact the maintainer via [GitHub](https://github.com/chayprabs) or [chaitanyaprabuddha.com](https://www.chaitanyaprabuddha.com).
+1. **Do not** open a public GitHub issue for exploitable vulnerabilities.
+2. Email **chaitanya.prabuddha@gmail.com** with a description, reproduction steps, and impact assessment.
+3. Allow up to **7 business days** for an initial response.
 
-We aim to acknowledge reports within a few business days.
+We will acknowledge valid reports, work on a fix when appropriate, and credit reporters who wish to be named.
 
 ## Scope
 
-In scope:
+Lens is a **fully client-side** static web app. Log file contents are processed in the browser and are **not** transmitted to an application server by Lens itself.
 
-- Client-side code in this repository (`src/`, `public/`, build scripts)
-- WASM loading and `locateFile` configuration
-- XSS or injection via log content rendered in the UI
+In-scope concerns include:
+
+- Cross-site scripting via query results or log-derived UI
+- WASM or script loading from unexpected origins
+- `localStorage` query-history handling
+- Misleading privacy or security claims in shipped static assets
 
 Out of scope:
 
-- Log files you choose to analyze (you are responsible for their content)
-- Third-party browser extensions with access to page memory
-- CDN or hosting misconfiguration outside this repository
+- Vulnerabilities in third-party hosting platforms (GitHub Pages, Cloudflare Pages, etc.)
+- Issues requiring physical access to the user’s device
+- Denial-of-service from intentionally loading extremely large local files (client-side limits are documented in the README)
 
-## Security model
+## Safe deployment
 
-Lens processes log files **only in the browser**. No log content is sent to an application server by this app. Query history stores **SQL text only** in `localStorage` (up to 10 entries).
+When self-hosting the `out/` directory:
+
+- Serve `.wasm` files with `Content-Type: application/wasm`.
+- Prefer the provided `public/_headers` (or equivalent) for CSP and related headers.
+- Do not replace local WASM with remote CDN copies unless you accept the supply-chain risk.

@@ -1,7 +1,7 @@
 /** Thrown when the user cancels an in-flight file load. */
 export class LoadCancelledError extends Error {
   constructor() {
-    super("File loading cancelled.");
+    super("File loading cancelled by user");
     this.name = "LoadCancelledError";
   }
 }

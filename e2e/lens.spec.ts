@@ -52,7 +52,7 @@ test.describe("Lens", () => {
     expect(text).toMatch(/\d+/);
   });
 
-  test("legal and help pages load", async ({ page }) => {
+  test("legal, help, and credits pages load", async ({ page }) => {
     await page.goto("/privacy");
     await expect(page.getByRole("heading", { name: /privacy policy/i })).toBeVisible();
 
@@ -63,6 +63,9 @@ test.describe("Lens", () => {
 
     await page.goto("/help");
     await expect(page.getByRole("heading", { name: /help & faq/i })).toBeVisible();
+
+    await page.goto("/credits");
+    await expect(page.getByRole("heading", { name: /credits/i })).toBeVisible();
   });
 
   test("rejects a binary file with a clear message", async ({ page }) => {
